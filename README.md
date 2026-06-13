@@ -10,27 +10,16 @@ A web application to manage multiple WhatsApp accounts in one unified dashboard.
 - Sessions persist on disk — no rescanning after server restart
 - Supports 15+ simultaneous WhatsApp connections
 - JWT authentication with 30-day sessions
+- **No Chromium/Puppeteer** — uses [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys), pure Node.js
 
 ## Requirements
 
 - Node.js 18+
-- A Linux VPS (Ubuntu 20.04+ recommended)
-- Chromium/Chrome dependencies (for Puppeteer)
+- Works on Railway, Render, VPS, or any Node.js host (no browser required)
 
 ## Quick Start
 
-### 1. Install system dependencies (Ubuntu/Debian)
-
-```bash
-sudo apt update
-sudo apt install -y chromium-browser \
-  libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-  libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
-  libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 \
-  libgtk-3-0 libxss1 fonts-liberation
-```
-
-### 2. Clone and install
+### 1. Clone and install
 
 ```bash
 git clone <your-repo-url> wa-manager
@@ -74,6 +63,16 @@ pm2 startup   # follow the printed command
 Visit `http://your-server-ip:3000` — the first user to sign up becomes the **Owner**.
 
 ---
+
+## Railway Deployment
+
+1. Push this repo to GitHub
+2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub repo
+3. Add environment variables in Railway dashboard:
+   - `PORT` → Railway sets this automatically
+   - `JWT_SECRET` → set a long random string
+   - `NODE_ENV` → `production`
+4. **Important — Session persistence:** Railway has ephemeral storage by default. Add a Railway Volume mounted at `/app/sessions` so WhatsApp sessions survive redeploys. Without this you'll need to re-scan QR codes after each deploy.
 
 ## Nginx Reverse Proxy
 
@@ -149,14 +148,6 @@ Certbot automatically edits your Nginx config and sets up auto-renewal.
 - **Agent**: Can view all chats and send replies, cannot manage accounts.
 
 ## Troubleshooting
-
-**Puppeteer/Chrome errors on VPS:**
-```bash
-# Find chromium path
-which chromium-browser || which chromium
-# Set in whatsapp.js puppeteer config:
-executablePath: '/usr/bin/chromium-browser'
-```
 
 **Sessions not persisting:** Ensure the `sessions/` directory is writable:
 ```bash

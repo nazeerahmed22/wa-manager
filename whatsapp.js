@@ -1,244 +1,269 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode');
+const pino = require('pino');
 const db = require('./database');
 const path = require('path');
+const fs = require('fs');
 
-const clients = new Map(); // accountId -> { client, status }
+const clients = new Map(); // accountId -> { sock, chats, contacts, status, label }
 let io = null;
 
-function setIO(socketIO) {
-  io = socketIO;
-}
+function setIO(socketIO) { io = socketIO; }
+function emit(event, data) { if (io) io.emit(event, data); }
 
-function emit(event, data) {
-  if (io) io.emit(event, data);
+function extractText(msg) {
+  const m = msg?.message;
+  if (!m) return '';
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.buttonsResponseMessage?.selectedDisplayText ||
+    m.listResponseMessage?.title ||
+    (m.audioMessage ? '[voice message]' : '') ||
+    (m.imageMessage ? '[image]' : '') ||
+    (m.videoMessage ? '[video]' : '') ||
+    (m.documentMessage ? '[document]' : '') ||
+    (m.stickerMessage ? '[sticker]' : '') ||
+    ''
+  );
 }
 
 async function createClient(accountId, label) {
   if (clients.has(accountId)) {
     const existing = clients.get(accountId);
-    if (existing.status === 'connected' || existing.status === 'connecting') {
-      return existing;
-    }
-    try { await existing.client.destroy(); } catch (_) {}
+    if (existing.status === 'connected' || existing.status === 'connecting') return existing;
+    try { existing.sock.ws?.close(); } catch (_) {}
   }
 
-  const client = new Client({
-    authStrategy: new LocalAuth({
-      clientId: accountId,
-      dataPath: path.join(__dirname, 'sessions'),
-    }),
-    puppeteer: {
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-      ],
-    },
-    restartOnAuthFail: true,
+  const sessDir = path.join(__dirname, 'sessions', accountId);
+  fs.mkdirSync(sessDir, { recursive: true });
+
+  const { state, saveCreds } = await useMultiFileAuthState(sessDir);
+
+  let version = [2, 3000, 1015901307];
+  try {
+    const latest = await fetchLatestBaileysVersion();
+    version = latest.version;
+  } catch (_) {}
+
+  const logger = pino({ level: 'silent' });
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger,
+    browser: ['WA Manager', 'Chrome', '120.0.0'],
+    generateHighQualityLinkPreview: false,
+    syncFullHistory: false,
   });
 
-  const entry = { client, status: 'connecting', label };
+  const chats = new Map();
+  const contacts = new Map();
+  const entry = { sock, chats, contacts, status: 'connecting', label };
   clients.set(accountId, entry);
 
   db.prepare(
-    "INSERT INTO wa_accounts (id, label, status) VALUES (?, ?, 'connecting') ON CONFLICT(id) DO UPDATE SET status='connecting'"
-  ).run(accountId, label);
+    "INSERT INTO wa_accounts (id, label, status) VALUES (?, ?, 'connecting') ON CONFLICT(id) DO UPDATE SET status='connecting', label=?"
+  ).run(accountId, label, label);
 
-  client.on('qr', async (qr) => {
-    try {
-      const qrDataUrl = await qrcode.toDataURL(qr);
-      emit('qr', { accountId, qr: qrDataUrl });
-      updateStatus(accountId, 'qr');
-    } catch (err) {
-      console.error('QR generation error:', err);
-    }
-  });
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-  client.on('ready', async () => {
-    entry.status = 'connected';
-    updateStatus(accountId, 'connected');
-    try {
-      const info = client.info;
-      const phone = info?.wid?.user || '';
-      db.prepare('UPDATE wa_accounts SET phone = ?, status = ? WHERE id = ?')
-        .run(phone, 'connected', accountId);
-      emit('account-ready', { accountId, phone, label });
-    } catch (err) {
-      console.error('Ready handler error:', err);
-    }
-  });
-
-  client.on('authenticated', () => {
-    entry.status = 'authenticated';
-    updateStatus(accountId, 'authenticated');
-  });
-
-  client.on('auth_failure', () => {
-    entry.status = 'disconnected';
-    updateStatus(accountId, 'disconnected');
-    emit('account-status', { accountId, status: 'auth_failure' });
-  });
-
-  client.on('disconnected', () => {
-    entry.status = 'disconnected';
-    updateStatus(accountId, 'disconnected');
-    emit('account-status', { accountId, status: 'disconnected' });
-    // Auto-reconnect after 5s
-    setTimeout(() => {
-      if (clients.has(accountId) && clients.get(accountId).status === 'disconnected') {
-        console.log(`Auto-reconnecting account ${accountId}...`);
-        createClient(accountId, label).catch(console.error);
+    if (qr) {
+      try {
+        const url = await qrcode.toDataURL(qr);
+        emit('qr', { accountId, qr: url });
+        entry.status = 'qr';
+        db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
+        emit('account-status', { accountId, status: 'qr' });
+      } catch (err) {
+        console.error('QR generation error:', err);
       }
-    }, 5000);
-  });
+    }
 
-  client.on('message', async (msg) => {
-    await handleIncomingMessage(accountId, msg, false);
-  });
+    if (connection === 'close') {
+      const code = (lastDisconnect?.error instanceof Boom)
+        ? lastDisconnect.error.output.statusCode
+        : 500;
+      const loggedOut = code === DisconnectReason.loggedOut;
 
-  client.on('message_create', async (msg) => {
-    if (msg.fromMe) {
-      await handleIncomingMessage(accountId, msg, true);
+      entry.status = 'disconnected';
+      db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'disconnected' });
+
+      if (!loggedOut) {
+        console.log(`Reconnecting ${accountId} in 5s...`);
+        setTimeout(() => createClient(accountId, label).catch(console.error), 5000);
+      } else {
+        clients.delete(accountId);
+        emit('account-status', { accountId, status: 'logged_out' });
+      }
+    } else if (connection === 'open') {
+      entry.status = 'connected';
+      const rawId = sock.user?.id || '';
+      const phone = rawId.split(':')[0].split('@')[0];
+      db.prepare("UPDATE wa_accounts SET phone=?, status='connected' WHERE id=?").run(phone, accountId);
+      emit('account-ready', { accountId, phone, label });
+      emit('account-status', { accountId, status: 'connected' });
     }
   });
 
-  client.initialize().catch((err) => {
-    console.error(`Client init error for ${accountId}:`, err.message);
-    entry.status = 'disconnected';
-    updateStatus(accountId, 'disconnected');
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('contacts.upsert', (cs) => {
+    for (const c of cs) {
+      const name = c.name || c.notify || c.id.split('@')[0];
+      contacts.set(c.id, name);
+      const chat = chats.get(c.id);
+      if (chat) { chat.name = name; chats.set(c.id, chat); }
+    }
+  });
+
+  sock.ev.on('contacts.update', (cs) => {
+    for (const c of cs) {
+      if (c.name || c.notify) {
+        const name = c.name || c.notify;
+        contacts.set(c.id, name);
+        const chat = chats.get(c.id);
+        if (chat) { chat.name = name; chats.set(c.id, chat); }
+      }
+    }
+  });
+
+  sock.ev.on('chats.upsert', (cs) => {
+    for (const c of cs) {
+      if (!chats.has(c.id)) {
+        chats.set(c.id, {
+          id: c.id,
+          name: contacts.get(c.id) || c.name || c.id.split('@')[0],
+          lastMessage: null,
+          unreadCount: c.unreadCount || 0,
+          isGroup: c.id.endsWith('@g.us'),
+        });
+      }
+    }
+  });
+
+  sock.ev.on('chats.update', (cs) => {
+    for (const c of cs) {
+      const existing = chats.get(c.id);
+      if (existing && c.unreadCount !== undefined) {
+        existing.unreadCount = c.unreadCount;
+      }
+    }
+  });
+
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
+    if (type !== 'notify') return;
+
+    for (const msg of messages) {
+      const jid = msg.key.remoteJid;
+      if (!jid || jid === 'status@broadcast') continue;
+
+      const body = extractText(msg);
+      if (!body) continue;
+
+      const fromMe = !!msg.key.fromMe;
+      const ts = Number(msg.messageTimestamp);
+      const contactName = contacts.get(jid) || jid.split('@')[0];
+
+      // Update in-memory chat
+      const chat = chats.get(jid) || {
+        id: jid, name: contactName, lastMessage: null,
+        unreadCount: 0, isGroup: jid.endsWith('@g.us'),
+      };
+      chat.lastMessage = { body, timestamp: ts, fromMe };
+      if (!fromMe) chat.unreadCount = (chat.unreadCount || 0) + 1;
+      chats.set(jid, chat);
+
+      // Persist to DB
+      const msgId = msg.key.id || `${accountId}_${ts}_${Math.random()}`;
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(msgId, accountId, jid, fromMe ? 1 : 0, fromMe ? 'me' : contactName, body, ts);
+      } catch (_) {}
+
+      emit('new-message', {
+        id: msgId, accountId, chatId: jid,
+        chatName: chat.name, fromMe,
+        author: fromMe ? 'me' : contactName,
+        body, timestamp: ts,
+      });
+    }
   });
 
   return entry;
 }
 
-async function handleIncomingMessage(accountId, msg, fromMe) {
-  try {
-    const chat = await msg.getChat();
-    const contact = await msg.getContact();
-
-    const messageData = {
-      id: msg.id._serialized || `${accountId}_${Date.now()}_${Math.random()}`,
-      accountId,
-      chatId: chat.id._serialized,
-      chatName: chat.name || contact.pushname || contact.number,
-      fromMe,
-      author: fromMe ? 'me' : (contact.pushname || contact.number || msg.from),
-      body: msg.body,
-      timestamp: msg.timestamp,
-      type: msg.type,
-    };
-
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      messageData.id,
-      accountId,
-      messageData.chatId,
-      fromMe ? 1 : 0,
-      messageData.author,
-      messageData.body,
-      messageData.timestamp
-    );
-
-    emit('new-message', messageData);
-  } catch (err) {
-    console.error('Message handler error:', err.message);
-  }
-}
-
-function updateStatus(accountId, status) {
-  db.prepare('UPDATE wa_accounts SET status = ? WHERE id = ?').run(status, accountId);
-  emit('account-status', { accountId, status });
-}
-
 async function getChats(accountId) {
   const entry = clients.get(accountId);
-  if (!entry || entry.status !== 'connected') {
-    throw new Error('Account not connected');
-  }
-  const chats = await entry.client.getChats();
-  return chats.slice(0, 100).map((c) => ({
-    id: c.id._serialized,
-    name: c.name,
-    lastMessage: c.lastMessage
-      ? {
-          body: c.lastMessage.body,
-          timestamp: c.lastMessage.timestamp,
-          fromMe: c.lastMessage.fromMe,
-        }
-      : null,
-    unreadCount: c.unreadCount,
-    isGroup: c.isGroup,
-  }));
+  if (!entry || entry.status !== 'connected') throw new Error('Account not connected');
+
+  return [...entry.chats.values()]
+    .sort((a, b) => (b.lastMessage?.timestamp || 0) - (a.lastMessage?.timestamp || 0))
+    .slice(0, 100);
 }
 
 async function getMessages(accountId, chatId, limit = 50) {
+  // Always return from DB first (messages.upsert persists everything)
+  const rows = db.prepare(
+    'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
+  ).all(accountId, chatId, limit).reverse();
+
+  if (rows.length) return rows;
+
+  // If DB empty, try fetching from WhatsApp
   const entry = clients.get(accountId);
-  if (!entry || entry.status !== 'connected') {
-    // Fall back to DB messages
-    return db.prepare(
-      'SELECT * FROM messages WHERE account_id = ? AND chat_id = ? ORDER BY timestamp DESC LIMIT ?'
-    ).all(accountId, chatId, limit).reverse();
-  }
+  if (!entry || entry.status !== 'connected') return rows;
+
   try {
-    const chat = await entry.client.getChatById(chatId);
-    const messages = await chat.fetchMessages({ limit });
-    // Persist to DB
-    for (const msg of messages) {
+    const result = await entry.sock.loadMessages(chatId, limit, undefined);
+    const msgs = (result?.messages || [])
+      .map(m => ({
+        id: m.key.id,
+        fromMe: !!m.key.fromMe,
+        body: extractText(m),
+        timestamp: Number(m.messageTimestamp),
+        type: 'chat',
+      }))
+      .filter(m => m.body);
+
+    for (const m of msgs) {
       try {
-        const contact = await msg.getContact();
         db.prepare(`
           INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
           VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          msg.id._serialized,
-          accountId,
-          chatId,
-          msg.fromMe ? 1 : 0,
-          msg.fromMe ? 'me' : (contact.pushname || contact.number || msg.from),
-          msg.body,
-          msg.timestamp
-        );
+        `).run(m.id, accountId, chatId, m.fromMe ? 1 : 0,
+          m.fromMe ? 'me' : chatId.split('@')[0], m.body, m.timestamp);
       } catch (_) {}
     }
-    return messages.map((m) => ({
-      id: m.id._serialized,
-      fromMe: m.fromMe,
-      body: m.body,
-      timestamp: m.timestamp,
-      type: m.type,
-    }));
+    return msgs;
   } catch (err) {
-    console.error('getMessages error:', err.message);
-    return db.prepare(
-      'SELECT * FROM messages WHERE account_id = ? AND chat_id = ? ORDER BY timestamp DESC LIMIT ?'
-    ).all(accountId, chatId, limit).reverse();
+    console.error('loadMessages error:', err.message);
+    return rows;
   }
 }
 
 async function sendMessage(accountId, chatId, message) {
   const entry = clients.get(accountId);
-  if (!entry || entry.status !== 'connected') {
-    throw new Error('Account not connected');
-  }
-  const result = await entry.client.sendMessage(chatId, message);
-  return result;
+  if (!entry || entry.status !== 'connected') throw new Error('Account not connected');
+  return entry.sock.sendMessage(chatId, { text: message });
 }
 
 async function disconnectAccount(accountId) {
   const entry = clients.get(accountId);
   if (entry) {
-    try { await entry.client.destroy(); } catch (_) {}
+    try { await entry.sock.logout(); } catch (_) {}
     clients.delete(accountId);
   }
-  db.prepare("UPDATE wa_accounts SET status = 'disconnected' WHERE id = ?").run(accountId);
+  db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
 }
 
 function getAccountStatus(accountId) {
@@ -247,13 +272,13 @@ function getAccountStatus(accountId) {
 }
 
 async function restorePersistedSessions() {
-  const accounts = db.prepare("SELECT * FROM wa_accounts").all();
-  console.log(`Restoring ${accounts.length} WhatsApp sessions...`);
-  for (const account of accounts) {
+  const accounts = db.prepare('SELECT * FROM wa_accounts').all();
+  console.log(`Restoring ${accounts.length} WhatsApp session(s)...`);
+  for (const acc of accounts) {
     try {
-      await createClient(account.id, account.label);
+      await createClient(acc.id, acc.label);
     } catch (err) {
-      console.error(`Failed to restore session ${account.id}:`, err.message);
+      console.error(`Failed to restore session ${acc.id}:`, err.message);
     }
   }
 }
