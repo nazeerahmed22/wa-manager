@@ -1,272 +1,234 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
-const pino = require('pino');
 const db = require('./database');
 const path = require('path');
 const fs = require('fs');
 
-const clients = new Map(); // accountId -> { sock, chats, contacts, status, label }
-const qrCache = new Map();  // accountId -> { qr, generatedAt }
+const clients = new Map(); // accountId -> { client, status, label }
+const qrCache = new Map(); // accountId -> { qr, generatedAt }
 let io = null;
 
 function setIO(socketIO) { io = socketIO; }
 function emit(event, data) { if (io) io.emit(event, data); }
 
-function extractText(msg) {
-  const m = msg?.message;
-  if (!m) return '';
-  return (
-    m.conversation ||
-    m.extendedTextMessage?.text ||
-    m.imageMessage?.caption ||
-    m.videoMessage?.caption ||
-    m.documentMessage?.caption ||
-    m.buttonsResponseMessage?.selectedDisplayText ||
-    m.listResponseMessage?.title ||
-    (m.audioMessage ? '[voice message]' : '') ||
-    (m.imageMessage ? '[image]' : '') ||
-    (m.videoMessage ? '[video]' : '') ||
-    (m.documentMessage ? '[document]' : '') ||
-    (m.stickerMessage ? '[sticker]' : '') ||
-    ''
-  );
+// Find system Chromium/Chrome — needed when PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+function findChrome() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+    '/usr/local/bin/chromium',
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch (_) {}
+  }
+  return null; // fall back to puppeteer's bundled chrome if present
 }
 
 async function createClient(accountId, label) {
   if (clients.has(accountId)) {
     const existing = clients.get(accountId);
     if (existing.status === 'connected' || existing.status === 'connecting') return existing;
-    try { existing.sock.ws?.close(); } catch (_) {}
+    try { await existing.client.destroy(); } catch (_) {}
   }
 
-  const sessDir = path.join(__dirname, 'sessions', accountId);
-  fs.mkdirSync(sessDir, { recursive: true });
+  const puppeteerArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--disable-gpu',
+    '--single-process',
+  ];
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessDir);
+  const chromePath = findChrome();
+  const puppeteerConfig = {
+    headless: true,
+    args: puppeteerArgs,
+  };
+  if (chromePath) puppeteerConfig.executablePath = chromePath;
 
-  let version = [2, 3000, 1015901307];
-  try {
-    const latest = await fetchLatestBaileysVersion();
-    version = latest.version;
-  } catch (_) {}
-
-  const logger = pino({ level: 'silent' });
-
-  const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false,
-    logger,
-    browser: ['WA Manager', 'Chrome', '120.0.0'],
-    generateHighQualityLinkPreview: false,
-    syncFullHistory: false,
+  const client = new Client({
+    authStrategy: new LocalAuth({
+      clientId: accountId,
+      dataPath: path.join(__dirname, 'sessions'),
+    }),
+    puppeteer: puppeteerConfig,
+    restartOnAuthFail: true,
   });
 
-  const chats = new Map();
-  const contacts = new Map();
-  const entry = { sock, chats, contacts, status: 'connecting', label };
+  const entry = { client, status: 'connecting', label };
   clients.set(accountId, entry);
 
   db.prepare(
     "INSERT INTO wa_accounts (id, label, status) VALUES (?, ?, 'connecting') ON CONFLICT(id) DO UPDATE SET status='connecting', label=?"
   ).run(accountId, label, label);
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      try {
-        const url = await qrcode.toDataURL(qr);
-        // Cache so REST polling endpoint can serve it
-        qrCache.set(accountId, { qr: url, generatedAt: Date.now() });
-        emit('qr', { accountId, qr: url });
-        entry.status = 'qr';
-        db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
-        emit('account-status', { accountId, status: 'qr' });
-      } catch (err) {
-        console.error('QR generation error:', err);
-      }
+  client.on('qr', async (qr) => {
+    try {
+      const url = await qrcode.toDataURL(qr);
+      qrCache.set(accountId, { qr: url, generatedAt: Date.now() });
+      emit('qr', { accountId, qr: url });
+      entry.status = 'qr';
+      db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'qr' });
+    } catch (err) {
+      console.error('QR error:', err);
     }
+  });
 
-    if (connection === 'close') {
-      const code = (lastDisconnect?.error instanceof Boom)
-        ? lastDisconnect.error.output.statusCode
-        : 500;
-      const loggedOut = code === DisconnectReason.loggedOut;
-
-      entry.status = 'disconnected';
-      db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
-      emit('account-status', { accountId, status: 'disconnected' });
-
-      if (!loggedOut) {
-        console.log(`Reconnecting ${accountId} in 5s...`);
-        setTimeout(() => createClient(accountId, label).catch(console.error), 5000);
-      } else {
-        clients.delete(accountId);
-        emit('account-status', { accountId, status: 'logged_out' });
-      }
-    } else if (connection === 'open') {
-      entry.status = 'connected';
-      qrCache.delete(accountId); // QR no longer needed
-      const rawId = sock.user?.id || '';
-      const phone = rawId.split(':')[0].split('@')[0];
+  client.on('ready', async () => {
+    entry.status = 'connected';
+    qrCache.delete(accountId);
+    try {
+      const phone = client.info?.wid?.user || '';
       db.prepare("UPDATE wa_accounts SET phone=?, status='connected' WHERE id=?").run(phone, accountId);
       emit('account-ready', { accountId, phone, label });
       emit('account-status', { accountId, status: 'connected' });
+    } catch (err) {
+      console.error('Ready handler error:', err);
     }
   });
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('contacts.upsert', (cs) => {
-    for (const c of cs) {
-      const name = c.name || c.notify || c.id.split('@')[0];
-      contacts.set(c.id, name);
-      const chat = chats.get(c.id);
-      if (chat) { chat.name = name; chats.set(c.id, chat); }
-    }
+  client.on('authenticated', () => {
+    entry.status = 'authenticated';
+    db.prepare("UPDATE wa_accounts SET status='authenticated' WHERE id=?").run(accountId);
+    emit('account-status', { accountId, status: 'authenticated' });
   });
 
-  sock.ev.on('contacts.update', (cs) => {
-    for (const c of cs) {
-      if (c.name || c.notify) {
-        const name = c.name || c.notify;
-        contacts.set(c.id, name);
-        const chat = chats.get(c.id);
-        if (chat) { chat.name = name; chats.set(c.id, chat); }
+  client.on('auth_failure', () => {
+    entry.status = 'disconnected';
+    qrCache.delete(accountId);
+    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+    emit('account-status', { accountId, status: 'auth_failure' });
+  });
+
+  client.on('disconnected', () => {
+    entry.status = 'disconnected';
+    qrCache.delete(accountId);
+    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+    emit('account-status', { accountId, status: 'disconnected' });
+    setTimeout(() => {
+      if (clients.has(accountId) && clients.get(accountId).status === 'disconnected') {
+        createClient(accountId, label).catch(console.error);
       }
-    }
+    }, 5000);
   });
 
-  sock.ev.on('chats.upsert', (cs) => {
-    for (const c of cs) {
-      if (!chats.has(c.id)) {
-        chats.set(c.id, {
-          id: c.id,
-          name: contacts.get(c.id) || c.name || c.id.split('@')[0],
-          lastMessage: null,
-          unreadCount: c.unreadCount || 0,
-          isGroup: c.id.endsWith('@g.us'),
-        });
-      }
-    }
-  });
+  client.on('message', async (msg) => handleMessage(accountId, msg, false));
+  client.on('message_create', async (msg) => { if (msg.fromMe) handleMessage(accountId, msg, true); });
 
-  sock.ev.on('chats.update', (cs) => {
-    for (const c of cs) {
-      const existing = chats.get(c.id);
-      if (existing && c.unreadCount !== undefined) {
-        existing.unreadCount = c.unreadCount;
-      }
-    }
-  });
-
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return;
-
-    for (const msg of messages) {
-      const jid = msg.key.remoteJid;
-      if (!jid || jid === 'status@broadcast') continue;
-
-      const body = extractText(msg);
-      if (!body) continue;
-
-      const fromMe = !!msg.key.fromMe;
-      const ts = Number(msg.messageTimestamp);
-      const contactName = contacts.get(jid) || jid.split('@')[0];
-
-      // Update in-memory chat
-      const chat = chats.get(jid) || {
-        id: jid, name: contactName, lastMessage: null,
-        unreadCount: 0, isGroup: jid.endsWith('@g.us'),
-      };
-      chat.lastMessage = { body, timestamp: ts, fromMe };
-      if (!fromMe) chat.unreadCount = (chat.unreadCount || 0) + 1;
-      chats.set(jid, chat);
-
-      // Persist to DB
-      const msgId = msg.key.id || `${accountId}_${ts}_${Math.random()}`;
-      try {
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(msgId, accountId, jid, fromMe ? 1 : 0, fromMe ? 'me' : contactName, body, ts);
-      } catch (_) {}
-
-      emit('new-message', {
-        id: msgId, accountId, chatId: jid,
-        chatName: chat.name, fromMe,
-        author: fromMe ? 'me' : contactName,
-        body, timestamp: ts,
-      });
-    }
+  client.initialize().catch((err) => {
+    console.error(`Client init error [${accountId}]:`, err.message);
+    entry.status = 'disconnected';
+    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+    emit('account-status', { accountId, status: 'disconnected' });
   });
 
   return entry;
 }
 
+async function handleMessage(accountId, msg, fromMe) {
+  try {
+    const chat = await msg.getChat();
+    const contact = await msg.getContact();
+    const msgId = msg.id._serialized || `${accountId}_${Date.now()}_${Math.random()}`;
+    const chatId = chat.id._serialized;
+    const author = fromMe ? 'me' : (contact.pushname || contact.number || msg.from);
+    const chatName = chat.name || contact.pushname || contact.number;
+
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(msgId, accountId, chatId, fromMe ? 1 : 0, author, msg.body, msg.timestamp);
+
+    emit('new-message', {
+      id: msgId, accountId, chatId, chatName,
+      fromMe, author, body: msg.body, timestamp: msg.timestamp,
+    });
+  } catch (err) {
+    console.error('Message handler error:', err.message);
+  }
+}
+
+function getQR(accountId) {
+  const cached = qrCache.get(accountId);
+  if (!cached) return null;
+  // WhatsApp QR codes expire after ~60s
+  if (Date.now() - cached.generatedAt > 60000) {
+    qrCache.delete(accountId);
+    return null;
+  }
+  return cached.qr;
+}
+
 async function getChats(accountId) {
   const entry = clients.get(accountId);
   if (!entry || entry.status !== 'connected') throw new Error('Account not connected');
-
-  return [...entry.chats.values()]
-    .sort((a, b) => (b.lastMessage?.timestamp || 0) - (a.lastMessage?.timestamp || 0))
-    .slice(0, 100);
+  const chats = await entry.client.getChats();
+  return chats.slice(0, 100).map((c) => ({
+    id: c.id._serialized,
+    name: c.name,
+    lastMessage: c.lastMessage ? {
+      body: c.lastMessage.body,
+      timestamp: c.lastMessage.timestamp,
+      fromMe: c.lastMessage.fromMe,
+    } : null,
+    unreadCount: c.unreadCount,
+    isGroup: c.isGroup,
+  }));
 }
 
 async function getMessages(accountId, chatId, limit = 50) {
-  // Always return from DB first (messages.upsert persists everything)
-  const rows = db.prepare(
-    'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
-  ).all(accountId, chatId, limit).reverse();
-
-  if (rows.length) return rows;
-
-  // If DB empty, try fetching from WhatsApp
   const entry = clients.get(accountId);
-  if (!entry || entry.status !== 'connected') return rows;
-
+  if (!entry || entry.status !== 'connected') {
+    return db.prepare(
+      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
+    ).all(accountId, chatId, limit).reverse();
+  }
   try {
-    const result = await entry.sock.loadMessages(chatId, limit, undefined);
-    const msgs = (result?.messages || [])
-      .map(m => ({
-        id: m.key.id,
-        fromMe: !!m.key.fromMe,
-        body: extractText(m),
-        timestamp: Number(m.messageTimestamp),
-        type: 'chat',
-      }))
-      .filter(m => m.body);
-
-    for (const m of msgs) {
+    const chat = await entry.client.getChatById(chatId);
+    const messages = await chat.fetchMessages({ limit });
+    for (const m of messages) {
       try {
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(m.id, accountId, chatId, m.fromMe ? 1 : 0,
-          m.fromMe ? 'me' : chatId.split('@')[0], m.body, m.timestamp);
+        const contact = await m.getContact();
+        db.prepare(`INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(m.id._serialized, accountId, chatId, m.fromMe ? 1 : 0,
+            m.fromMe ? 'me' : (contact.pushname || contact.number || m.from), m.body, m.timestamp);
       } catch (_) {}
     }
-    return msgs;
+    return messages.map((m) => ({
+      id: m.id._serialized, fromMe: m.fromMe,
+      body: m.body, timestamp: m.timestamp, type: m.type,
+    }));
   } catch (err) {
-    console.error('loadMessages error:', err.message);
-    return rows;
+    console.error('getMessages error:', err.message);
+    return db.prepare(
+      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
+    ).all(accountId, chatId, limit).reverse();
   }
 }
 
 async function sendMessage(accountId, chatId, message) {
   const entry = clients.get(accountId);
   if (!entry || entry.status !== 'connected') throw new Error('Account not connected');
-  return entry.sock.sendMessage(chatId, { text: message });
+  return entry.client.sendMessage(chatId, message);
 }
 
 async function disconnectAccount(accountId) {
   const entry = clients.get(accountId);
   if (entry) {
-    try { await entry.sock.logout(); } catch (_) {}
+    try { await entry.client.destroy(); } catch (_) {}
     clients.delete(accountId);
   }
+  qrCache.delete(accountId);
   db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
 }
 
@@ -279,34 +241,13 @@ async function restorePersistedSessions() {
   const accounts = db.prepare('SELECT * FROM wa_accounts').all();
   console.log(`Restoring ${accounts.length} WhatsApp session(s)...`);
   for (const acc of accounts) {
-    try {
-      await createClient(acc.id, acc.label);
-    } catch (err) {
-      console.error(`Failed to restore session ${acc.id}:`, err.message);
-    }
+    try { await createClient(acc.id, acc.label); }
+    catch (err) { console.error(`Failed to restore ${acc.id}:`, err.message); }
   }
-}
-
-function getQR(accountId) {
-  const cached = qrCache.get(accountId);
-  if (!cached) return null;
-  // QR codes expire after 60s on WhatsApp side
-  if (Date.now() - cached.generatedAt > 60000) {
-    qrCache.delete(accountId);
-    return null;
-  }
-  return cached.qr;
 }
 
 module.exports = {
-  setIO,
-  createClient,
-  getChats,
-  getMessages,
-  sendMessage,
-  disconnectAccount,
-  getAccountStatus,
-  getQR,
-  restorePersistedSessions,
-  clients,
+  setIO, createClient, getChats, getMessages,
+  sendMessage, disconnectAccount, getAccountStatus,
+  getQR, restorePersistedSessions, clients,
 };

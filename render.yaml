@@ -12,6 +12,12 @@ services:
         generateValue: true
       - key: PORT
         value: 10000
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "true"
+      - key: CHROME_PATH
+        value: /usr/bin/google-chrome
     disk:
       name: sessions
       mountPath: /opt/render/project/src/sessions
