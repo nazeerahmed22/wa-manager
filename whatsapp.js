@@ -4,60 +4,6 @@ const db = require('./database');
 const path = require('path');
 const fs = require('fs');
 
-// ── Shared Browser Pool ────────────────────────────────────────────────────────
-// Monkey-patch puppeteer.launch so all whatsapp-web.js Clients share a single
-// Chrome process. Each session gets its own incognito context for full isolation.
-const puppeteer = require('puppeteer');
-const _originalLaunch = puppeteer.launch.bind(puppeteer);
-let _sharedBrowser = null;
-
-function _wrapBrowser(browser) {
-  return new Proxy(browser, {
-    get(target, prop) {
-      // Prevent any Client from closing the shared Chrome
-      if (prop === 'close' || prop === 'disconnect') {
-        return async () => {};
-      }
-      // Give each session an isolated incognito context instead of the default one
-      if (prop === 'newPage') {
-        return async () => {
-          try {
-            const ctx = typeof target.createBrowserContext === 'function'
-              ? await target.createBrowserContext()           // Puppeteer v21+
-              : await target.createIncognitoBrowserContext(); // Puppeteer < v21
-            return ctx.newPage();
-          } catch (_) {
-            return target.newPage(); // fallback to default context
-          }
-        };
-      }
-      const val = target[prop];
-      return typeof val === 'function' ? val.bind(target) : val;
-    },
-  });
-}
-
-puppeteer.launch = async (options) => {
-  if (!_sharedBrowser || !_sharedBrowser.isConnected()) {
-    console.log('Launching shared Chrome browser...');
-    _sharedBrowser = await _originalLaunch(options);
-    _sharedBrowser.on('disconnected', () => {
-      console.log('Shared Chrome disconnected — will relaunch on next session');
-      _sharedBrowser = null;
-    });
-  }
-  return _wrapBrowser(_sharedBrowser);
-};
-
-// Graceful shutdown helper (call on SIGTERM)
-async function closeSharedBrowser() {
-  if (_sharedBrowser) {
-    try { await _sharedBrowser.close(); } catch (_) {}
-    _sharedBrowser = null;
-  }
-}
-// ──────────────────────────────────────────────────────────────────────────────
-
 const clients = new Map(); // accountId -> { client, status, label }
 const qrCache = new Map(); // accountId -> { qr, generatedAt }
 let io = null;
@@ -81,17 +27,6 @@ function findChrome() {
   return null;
 }
 
-const PUPPETEER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-accelerated-2d-canvas',
-  '--no-first-run',
-  '--no-zygote',
-  '--disable-gpu',
-  '--single-process',
-];
-
 async function createClient(accountId, label) {
   if (clients.has(accountId)) {
     const existing = clients.get(accountId);
@@ -99,8 +34,27 @@ async function createClient(accountId, label) {
     try { await existing.client.destroy(); } catch (_) {}
   }
 
+  // Each client gets a completely unique userDataDir so Chrome never
+  // hits "browser is already running" across sessions
+  const userDataDir = path.join(__dirname, 'sessions', `session-${accountId}`);
+  fs.mkdirSync(userDataDir, { recursive: true });
+
+  const puppeteerConfig = {
+    headless: true,
+    userDataDir,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+      '--single-process',
+    ],
+  };
+
   const chromePath = findChrome();
-  const puppeteerConfig = { headless: true, args: PUPPETEER_ARGS };
   if (chromePath) puppeteerConfig.executablePath = chromePath;
 
   const client = new Client({
@@ -216,7 +170,9 @@ async function getChats(accountId) {
   const chats = await entry.client.getChats();
   return chats.slice(0, 100).map((c) => ({
     id: c.id._serialized, name: c.name,
-    lastMessage: c.lastMessage ? { body: c.lastMessage.body, timestamp: c.lastMessage.timestamp, fromMe: c.lastMessage.fromMe } : null,
+    lastMessage: c.lastMessage
+      ? { body: c.lastMessage.body, timestamp: c.lastMessage.timestamp, fromMe: c.lastMessage.fromMe }
+      : null,
     unreadCount: c.unreadCount, isGroup: c.isGroup,
   }));
 }
@@ -224,7 +180,9 @@ async function getChats(accountId) {
 async function getMessages(accountId, chatId, limit = 50) {
   const entry = clients.get(accountId);
   if (!entry || entry.status !== 'connected') {
-    return db.prepare('SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?').all(accountId, chatId, limit).reverse();
+    return db.prepare(
+      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
+    ).all(accountId, chatId, limit).reverse();
   }
   try {
     const chat = await entry.client.getChatById(chatId);
@@ -240,7 +198,9 @@ async function getMessages(accountId, chatId, limit = 50) {
     return messages.map((m) => ({ id: m.id._serialized, fromMe: m.fromMe, body: m.body, timestamp: m.timestamp, type: m.type }));
   } catch (err) {
     console.error('getMessages error:', err.message);
-    return db.prepare('SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?').all(accountId, chatId, limit).reverse();
+    return db.prepare(
+      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
+    ).all(accountId, chatId, limit).reverse();
   }
 }
 
@@ -267,22 +227,12 @@ function getAccountStatus(accountId) {
 
 async function restorePersistedSessions() {
   const accounts = db.prepare('SELECT * FROM wa_accounts').all();
-  console.log(`Restoring ${accounts.length} WhatsApp session(s) on shared browser...`);
+  console.log(`Restoring ${accounts.length} WhatsApp session(s)...`);
   for (const acc of accounts) {
     try { await createClient(acc.id, acc.label); }
     catch (err) { console.error(`Failed to restore ${acc.id}:`, err.message); }
   }
 }
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received — closing WhatsApp clients and browser');
-  for (const [id] of clients) {
-    try { await clients.get(id).client.destroy(); } catch (_) {}
-  }
-  await closeSharedBrowser();
-  process.exit(0);
-});
 
 module.exports = {
   setIO, createClient, getChats, getMessages,
