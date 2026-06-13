@@ -25,16 +25,19 @@ router.post('/signup', async (req, res) => {
       'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)'
     ).run(name, email, hash, finalRole);
 
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not set in environment');
+
     const token = jwt.sign(
       { id: result.lastInsertRowid, email, name, role: finalRole },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: '30d' }
     );
 
     res.json({ token, user: { id: result.lastInsertRowid, name, email, role: finalRole } });
   } catch (err) {
     console.error('Signup error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 });
 
@@ -50,16 +53,19 @@ router.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not set in environment');
+
     const token = jwt.sign(
       { id: user.id, email: user.email, name: user.name, role: user.role },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: '30d' }
     );
 
     res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: err.message || 'Server error' });
   }
 });
 
