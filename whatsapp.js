@@ -4,6 +4,60 @@ const db = require('./database');
 const path = require('path');
 const fs = require('fs');
 
+// ── Shared Browser Pool ────────────────────────────────────────────────────────
+// Monkey-patch puppeteer.launch so all whatsapp-web.js Clients share a single
+// Chrome process. Each session gets its own incognito context for full isolation.
+const puppeteer = require('puppeteer');
+const _originalLaunch = puppeteer.launch.bind(puppeteer);
+let _sharedBrowser = null;
+
+function _wrapBrowser(browser) {
+  return new Proxy(browser, {
+    get(target, prop) {
+      // Prevent any Client from closing the shared Chrome
+      if (prop === 'close' || prop === 'disconnect') {
+        return async () => {};
+      }
+      // Give each session an isolated incognito context instead of the default one
+      if (prop === 'newPage') {
+        return async () => {
+          try {
+            const ctx = typeof target.createBrowserContext === 'function'
+              ? await target.createBrowserContext()           // Puppeteer v21+
+              : await target.createIncognitoBrowserContext(); // Puppeteer < v21
+            return ctx.newPage();
+          } catch (_) {
+            return target.newPage(); // fallback to default context
+          }
+        };
+      }
+      const val = target[prop];
+      return typeof val === 'function' ? val.bind(target) : val;
+    },
+  });
+}
+
+puppeteer.launch = async (options) => {
+  if (!_sharedBrowser || !_sharedBrowser.isConnected()) {
+    console.log('Launching shared Chrome browser...');
+    _sharedBrowser = await _originalLaunch(options);
+    _sharedBrowser.on('disconnected', () => {
+      console.log('Shared Chrome disconnected — will relaunch on next session');
+      _sharedBrowser = null;
+    });
+  }
+  return _wrapBrowser(_sharedBrowser);
+};
+
+// Graceful shutdown helper (call on SIGTERM)
+async function closeSharedBrowser() {
+  if (_sharedBrowser) {
+    try { await _sharedBrowser.close(); } catch (_) {}
+    _sharedBrowser = null;
+  }
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 const clients = new Map(); // accountId -> { client, status, label }
 const qrCache = new Map(); // accountId -> { qr, generatedAt }
 let io = null;
@@ -11,24 +65,32 @@ let io = null;
 function setIO(socketIO) { io = socketIO; }
 function emit(event, data) { if (io) io.emit(event, data); }
 
-// Find system Chromium/Chrome — needed when PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 function findChrome() {
   const candidates = [
-    process.env.CHROME_PATH,
     process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/snap/bin/chromium',
-    '/usr/local/bin/chromium',
   ].filter(Boolean);
-
   for (const p of candidates) {
     try { if (fs.existsSync(p)) return p; } catch (_) {}
   }
-  return null; // fall back to puppeteer's bundled chrome if present
+  return null;
 }
+
+const PUPPETEER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-accelerated-2d-canvas',
+  '--no-first-run',
+  '--no-zygote',
+  '--disable-gpu',
+  '--single-process',
+];
 
 async function createClient(accountId, label) {
   if (clients.has(accountId)) {
@@ -37,22 +99,8 @@ async function createClient(accountId, label) {
     try { await existing.client.destroy(); } catch (_) {}
   }
 
-  const puppeteerArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--disable-gpu',
-    '--single-process',
-  ];
-
   const chromePath = findChrome();
-  const puppeteerConfig = {
-    headless: true,
-    args: puppeteerArgs,
-  };
+  const puppeteerConfig = { headless: true, args: PUPPETEER_ARGS };
   if (chromePath) puppeteerConfig.executablePath = chromePath;
 
   const client = new Client({
@@ -149,10 +197,7 @@ async function handleMessage(accountId, msg, fromMe) {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(msgId, accountId, chatId, fromMe ? 1 : 0, author, msg.body, msg.timestamp);
 
-    emit('new-message', {
-      id: msgId, accountId, chatId, chatName,
-      fromMe, author, body: msg.body, timestamp: msg.timestamp,
-    });
+    emit('new-message', { id: msgId, accountId, chatId, chatName, fromMe, author, body: msg.body, timestamp: msg.timestamp });
   } catch (err) {
     console.error('Message handler error:', err.message);
   }
@@ -161,11 +206,7 @@ async function handleMessage(accountId, msg, fromMe) {
 function getQR(accountId) {
   const cached = qrCache.get(accountId);
   if (!cached) return null;
-  // WhatsApp QR codes expire after ~60s
-  if (Date.now() - cached.generatedAt > 60000) {
-    qrCache.delete(accountId);
-    return null;
-  }
+  if (Date.now() - cached.generatedAt > 60000) { qrCache.delete(accountId); return null; }
   return cached.qr;
 }
 
@@ -174,24 +215,16 @@ async function getChats(accountId) {
   if (!entry || entry.status !== 'connected') throw new Error('Account not connected');
   const chats = await entry.client.getChats();
   return chats.slice(0, 100).map((c) => ({
-    id: c.id._serialized,
-    name: c.name,
-    lastMessage: c.lastMessage ? {
-      body: c.lastMessage.body,
-      timestamp: c.lastMessage.timestamp,
-      fromMe: c.lastMessage.fromMe,
-    } : null,
-    unreadCount: c.unreadCount,
-    isGroup: c.isGroup,
+    id: c.id._serialized, name: c.name,
+    lastMessage: c.lastMessage ? { body: c.lastMessage.body, timestamp: c.lastMessage.timestamp, fromMe: c.lastMessage.fromMe } : null,
+    unreadCount: c.unreadCount, isGroup: c.isGroup,
   }));
 }
 
 async function getMessages(accountId, chatId, limit = 50) {
   const entry = clients.get(accountId);
   if (!entry || entry.status !== 'connected') {
-    return db.prepare(
-      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
-    ).all(accountId, chatId, limit).reverse();
+    return db.prepare('SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?').all(accountId, chatId, limit).reverse();
   }
   try {
     const chat = await entry.client.getChatById(chatId);
@@ -199,20 +232,15 @@ async function getMessages(accountId, chatId, limit = 50) {
     for (const m of messages) {
       try {
         const contact = await m.getContact();
-        db.prepare(`INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        db.prepare('INSERT OR IGNORE INTO messages (id, account_id, chat_id, from_me, author, body, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(m.id._serialized, accountId, chatId, m.fromMe ? 1 : 0,
             m.fromMe ? 'me' : (contact.pushname || contact.number || m.from), m.body, m.timestamp);
       } catch (_) {}
     }
-    return messages.map((m) => ({
-      id: m.id._serialized, fromMe: m.fromMe,
-      body: m.body, timestamp: m.timestamp, type: m.type,
-    }));
+    return messages.map((m) => ({ id: m.id._serialized, fromMe: m.fromMe, body: m.body, timestamp: m.timestamp, type: m.type }));
   } catch (err) {
     console.error('getMessages error:', err.message);
-    return db.prepare(
-      'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
-    ).all(accountId, chatId, limit).reverse();
+    return db.prepare('SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?').all(accountId, chatId, limit).reverse();
   }
 }
 
@@ -239,12 +267,22 @@ function getAccountStatus(accountId) {
 
 async function restorePersistedSessions() {
   const accounts = db.prepare('SELECT * FROM wa_accounts').all();
-  console.log(`Restoring ${accounts.length} WhatsApp session(s)...`);
+  console.log(`Restoring ${accounts.length} WhatsApp session(s) on shared browser...`);
   for (const acc of accounts) {
     try { await createClient(acc.id, acc.label); }
     catch (err) { console.error(`Failed to restore ${acc.id}:`, err.message); }
   }
 }
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received — closing WhatsApp clients and browser');
+  for (const [id] of clients) {
+    try { await clients.get(id).client.destroy(); } catch (_) {}
+  }
+  await closeSharedBrowser();
+  process.exit(0);
+});
 
 module.exports = {
   setIO, createClient, getChats, getMessages,
