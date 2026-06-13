@@ -844,9 +844,12 @@ function openConnectModal() {
 
 function closeConnectModal() {
   document.getElementById('connect-modal').classList.add('hidden');
+  stopQRPolling();
   pendingAccountId = null;
   loadAccounts();
 }
+
+let qrPollTimer = null;
 
 async function startConnect() {
   const label = document.getElementById('account-label').value.trim();
@@ -865,16 +868,51 @@ async function startConnect() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     pendingAccountId = data.accountId;
-    document.getElementById('qr-status').textContent = 'Waiting for QR code... Open WhatsApp → Linked Devices → Link a device';
+    document.getElementById('qr-status').textContent = 'Waiting for QR code...';
+
+    // Ask socket to replay cached QR in case we missed it
+    if (socket?.connected) socket.emit('watch-qr', { accountId: pendingAccountId });
+
+    // Also start REST polling as fallback (works even if WebSocket fails)
+    startQRPolling(pendingAccountId);
   } catch (err) {
     toast('Error: ' + err.message);
     closeConnectModal();
   }
 }
 
+function startQRPolling(accountId) {
+  stopQRPolling();
+  let attempts = 0;
+  qrPollTimer = setInterval(async () => {
+    if (accountId !== pendingAccountId) { stopQRPolling(); return; }
+    attempts++;
+    try {
+      const res = await apiFetch(`/api/whatsapp/qr/${accountId}`);
+      const data = await res.json();
+      if (data.status === 'connected') {
+        stopQRPolling();
+        closeConnectModal();
+        loadAccounts();
+      } else if (data.qr) {
+        showQR(data.qr);
+      }
+    } catch (_) {}
+    // Stop polling after 3 minutes
+    if (attempts > 36) stopQRPolling();
+  }, 5000);
+}
+
+function stopQRPolling() {
+  if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+}
+
 function showQR(qrDataUrl) {
+  // Don't re-render same QR
+  const existing = document.querySelector('#qr-container img');
+  if (existing?.src === qrDataUrl) return;
   document.getElementById('qr-container').innerHTML = `<img src="${qrDataUrl}" alt="QR Code" />`;
-  document.getElementById('qr-status').textContent = 'Scan this QR code with your phone';
+  document.getElementById('qr-status').textContent = 'Scan with WhatsApp → Linked Devices → Link a device';
 }
 
 // ── Utilities ──────────────────────────────────────────

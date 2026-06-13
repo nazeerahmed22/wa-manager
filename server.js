@@ -60,11 +60,29 @@ app.post('/api/whatsapp/connect', requireAuth, requireOwner, async (req, res) =>
     if (!label) return res.status(400).json({ error: 'Label is required' });
     const accountId = randomUUID();
     await wa.createClient(accountId, label);
-    res.json({ accountId, status: 'connecting', message: 'QR code will be sent via socket' });
+    res.json({ accountId, status: 'connecting', message: 'Poll GET /api/whatsapp/qr/:accountId for QR code' });
   } catch (err) {
     console.error('Connect error:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// REST QR polling endpoint — fallback for when WebSocket is unavailable (e.g. Railway)
+app.get('/api/whatsapp/qr/:accountId', requireAuth, requireOwner, (req, res) => {
+  const { accountId } = req.params;
+  const status = wa.getAccountStatus(accountId);
+
+  if (status === 'connected') {
+    return res.json({ status: 'connected' });
+  }
+
+  const qr = wa.getQR(accountId);
+  if (qr) {
+    return res.json({ status: 'qr', qr });
+  }
+
+  // Still initialising or QR not yet generated
+  res.json({ status: status || 'connecting', qr: null });
 });
 
 app.post('/api/whatsapp/disconnect/:accountId', requireAuth, requireOwner, async (req, res) => {
@@ -150,6 +168,13 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.user.email}`);
+
+  // If client connects while a QR is waiting, replay it immediately
+  socket.on('watch-qr', ({ accountId }) => {
+    const qr = wa.getQR(accountId);
+    if (qr) socket.emit('qr', { accountId, qr });
+    else socket.emit('account-status', { accountId, status: wa.getAccountStatus(accountId) });
+  });
 
   socket.on('disconnect', () => {
     console.log(`Socket disconnected: ${socket.user?.email}`);

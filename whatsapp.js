@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 
 const clients = new Map(); // accountId -> { sock, chats, contacts, status, label }
+const qrCache = new Map();  // accountId -> { qr, generatedAt }
 let io = null;
 
 function setIO(socketIO) { io = socketIO; }
@@ -77,6 +78,8 @@ async function createClient(accountId, label) {
     if (qr) {
       try {
         const url = await qrcode.toDataURL(qr);
+        // Cache so REST polling endpoint can serve it
+        qrCache.set(accountId, { qr: url, generatedAt: Date.now() });
         emit('qr', { accountId, qr: url });
         entry.status = 'qr';
         db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
@@ -105,6 +108,7 @@ async function createClient(accountId, label) {
       }
     } else if (connection === 'open') {
       entry.status = 'connected';
+      qrCache.delete(accountId); // QR no longer needed
       const rawId = sock.user?.id || '';
       const phone = rawId.split(':')[0].split('@')[0];
       db.prepare("UPDATE wa_accounts SET phone=?, status='connected' WHERE id=?").run(phone, accountId);
@@ -283,6 +287,17 @@ async function restorePersistedSessions() {
   }
 }
 
+function getQR(accountId) {
+  const cached = qrCache.get(accountId);
+  if (!cached) return null;
+  // QR codes expire after 60s on WhatsApp side
+  if (Date.now() - cached.generatedAt > 60000) {
+    qrCache.delete(accountId);
+    return null;
+  }
+  return cached.qr;
+}
+
 module.exports = {
   setIO,
   createClient,
@@ -291,6 +306,7 @@ module.exports = {
   sendMessage,
   disconnectAccount,
   getAccountStatus,
+  getQR,
   restorePersistedSessions,
   clients,
 };
