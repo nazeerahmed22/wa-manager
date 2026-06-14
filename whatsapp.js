@@ -34,9 +34,12 @@ async function createClient(accountId, label) {
     try { await existing.client.destroy(); } catch (_) {}
   }
 
-  // Each client gets a completely unique userDataDir so Chrome never
-  // hits "browser is already running" across sessions
+  // Delete stale userDataDir first — removes any Chrome lock file that
+  // causes "browser is already running" on reconnect or new sessions
   const userDataDir = path.join(__dirname, 'sessions', `session-${accountId}`);
+  if (fs.existsSync(userDataDir)) {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  }
   fs.mkdirSync(userDataDir, { recursive: true });
 
   const puppeteerConfig = {
