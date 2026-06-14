@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, NoAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const db = require('./database');
 const path = require('path');
@@ -7,6 +7,7 @@ const fs = require('fs');
 const clients = new Map(); // accountId -> { client, status, label }
 const qrCache = new Map(); // accountId -> { qr, generatedAt }
 let io = null;
+let initQueue = Promise.resolve(); // serialise client launches with 3s gap
 
 function setIO(socketIO) { io = socketIO; }
 function emit(event, data) { if (io) io.emit(event, data); }
@@ -27,20 +28,21 @@ function findChrome() {
   return null;
 }
 
-async function createClient(accountId, label) {
-  if (clients.has(accountId)) {
-    const existing = clients.get(accountId);
-    if (existing.status === 'connected' || existing.status === 'connecting') return existing;
-    try { await existing.client.destroy(); } catch (_) {}
-  }
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  // Delete stale userDataDir first — removes any Chrome lock file that
-  // causes "browser is already running" on reconnect or new sessions
-  const userDataDir = path.join(__dirname, 'sessions', `session-${accountId}`);
-  if (fs.existsSync(userDataDir)) {
-    fs.rmSync(userDataDir, { recursive: true, force: true });
+function wipeDir(dir) {
+  try {
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    console.error(`Failed to wipe ${dir}:`, err.message);
   }
-  fs.mkdirSync(userDataDir, { recursive: true });
+}
+
+function buildClient(accountId) {
+  // Unique, freshly-cleared Chrome profile per account
+  const userDataDir = path.join(__dirname, 'sessions', `chrome-${accountId}`);
+  wipeDir(userDataDir);
 
   const puppeteerConfig = {
     headless: true,
@@ -49,92 +51,108 @@ async function createClient(accountId, label) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
       '--disable-gpu',
       '--single-process',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-accelerated-2d-canvas',
     ],
   };
 
   const chromePath = findChrome();
   if (chromePath) puppeteerConfig.executablePath = chromePath;
 
-  const client = new Client({
-    authStrategy: new LocalAuth({
-      clientId: accountId,
-      dataPath: path.join(__dirname, 'sessions'),
-    }),
+  return new Client({
+    authStrategy: new NoAuth(),
     puppeteer: puppeteerConfig,
-    restartOnAuthFail: true,
+    restartOnAuthFail: false,
   });
+}
 
-  const entry = { client, status: 'connecting', label };
+async function createClient(accountId, label) {
+  // Destroy any existing client for this account
+  if (clients.has(accountId)) {
+    const old = clients.get(accountId);
+    if (old.status === 'connected' || old.status === 'connecting') return old;
+    try { await old.client.destroy(); } catch (_) {}
+    clients.delete(accountId);
+  }
+
+  const entry = { client: null, status: 'connecting', label };
   clients.set(accountId, entry);
 
   db.prepare(
     "INSERT INTO wa_accounts (id, label, status) VALUES (?, ?, 'connecting') ON CONFLICT(id) DO UPDATE SET status='connecting', label=?"
   ).run(accountId, label, label);
 
-  client.on('qr', async (qr) => {
-    try {
-      const url = await qrcode.toDataURL(qr);
-      qrCache.set(accountId, { qr: url, generatedAt: Date.now() });
-      emit('qr', { accountId, qr: url });
-      entry.status = 'qr';
-      db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
-      emit('account-status', { accountId, status: 'qr' });
-    } catch (err) {
-      console.error('QR error:', err);
-    }
-  });
+  // Queue launches 3 seconds apart to prevent Chrome process collisions
+  initQueue = initQueue.then(() => delay(3000)).then(async () => {
+    if (!clients.has(accountId)) return; // was removed while waiting
 
-  client.on('ready', async () => {
-    entry.status = 'connected';
-    qrCache.delete(accountId);
-    try {
-      const phone = client.info?.wid?.user || '';
-      db.prepare("UPDATE wa_accounts SET phone=?, status='connected' WHERE id=?").run(phone, accountId);
-      emit('account-ready', { accountId, phone, label });
-      emit('account-status', { accountId, status: 'connected' });
-    } catch (err) {
-      console.error('Ready handler error:', err);
-    }
-  });
+    const client = buildClient(accountId);
+    entry.client = client;
 
-  client.on('authenticated', () => {
-    entry.status = 'authenticated';
-    db.prepare("UPDATE wa_accounts SET status='authenticated' WHERE id=?").run(accountId);
-    emit('account-status', { accountId, status: 'authenticated' });
-  });
-
-  client.on('auth_failure', () => {
-    entry.status = 'disconnected';
-    qrCache.delete(accountId);
-    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
-    emit('account-status', { accountId, status: 'auth_failure' });
-  });
-
-  client.on('disconnected', () => {
-    entry.status = 'disconnected';
-    qrCache.delete(accountId);
-    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
-    emit('account-status', { accountId, status: 'disconnected' });
-    setTimeout(() => {
-      if (clients.has(accountId) && clients.get(accountId).status === 'disconnected') {
-        createClient(accountId, label).catch(console.error);
+    client.on('qr', async (qr) => {
+      try {
+        const url = await qrcode.toDataURL(qr);
+        qrCache.set(accountId, { qr: url, generatedAt: Date.now() });
+        emit('qr', { accountId, qr: url });
+        entry.status = 'qr';
+        db.prepare("UPDATE wa_accounts SET status='qr' WHERE id=?").run(accountId);
+        emit('account-status', { accountId, status: 'qr' });
+      } catch (err) {
+        console.error('QR error:', err);
       }
-    }, 5000);
-  });
+    });
 
-  client.on('message', async (msg) => handleMessage(accountId, msg, false));
-  client.on('message_create', async (msg) => { if (msg.fromMe) handleMessage(accountId, msg, true); });
+    client.on('ready', async () => {
+      entry.status = 'connected';
+      qrCache.delete(accountId);
+      try {
+        const phone = client.info?.wid?.user || '';
+        db.prepare("UPDATE wa_accounts SET phone=?, status='connected' WHERE id=?").run(phone, accountId);
+        emit('account-ready', { accountId, phone, label });
+        emit('account-status', { accountId, status: 'connected' });
+      } catch (err) {
+        console.error('Ready handler error:', err);
+      }
+    });
 
-  client.initialize().catch((err) => {
-    console.error(`Client init error [${accountId}]:`, err.message);
-    entry.status = 'disconnected';
-    db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
-    emit('account-status', { accountId, status: 'disconnected' });
+    client.on('authenticated', () => {
+      entry.status = 'authenticated';
+      db.prepare("UPDATE wa_accounts SET status='authenticated' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'authenticated' });
+    });
+
+    client.on('auth_failure', () => {
+      entry.status = 'disconnected';
+      qrCache.delete(accountId);
+      db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'auth_failure' });
+    });
+
+    client.on('disconnected', () => {
+      entry.status = 'disconnected';
+      qrCache.delete(accountId);
+      db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'disconnected' });
+      // Auto-reconnect (will re-show QR since NoAuth doesn't persist)
+      setTimeout(() => {
+        if (clients.has(accountId) && clients.get(accountId).status === 'disconnected') {
+          createClient(accountId, label).catch(console.error);
+        }
+      }, 5000);
+    });
+
+    client.on('message', async (msg) => handleMessage(accountId, msg, false));
+    client.on('message_create', async (msg) => { if (msg.fromMe) handleMessage(accountId, msg, true); });
+
+    client.initialize().catch((err) => {
+      console.error(`Client init error [${accountId}]:`, err.message);
+      entry.status = 'disconnected';
+      db.prepare("UPDATE wa_accounts SET status='disconnected' WHERE id=?").run(accountId);
+      emit('account-status', { accountId, status: 'disconnected' });
+    });
   });
 
   return entry;
@@ -200,7 +218,6 @@ async function getMessages(accountId, chatId, limit = 50) {
     }
     return messages.map((m) => ({ id: m.id._serialized, fromMe: m.fromMe, body: m.body, timestamp: m.timestamp, type: m.type }));
   } catch (err) {
-    console.error('getMessages error:', err.message);
     return db.prepare(
       'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'
     ).all(accountId, chatId, limit).reverse();
@@ -224,8 +241,7 @@ async function disconnectAccount(accountId) {
 }
 
 function getAccountStatus(accountId) {
-  const entry = clients.get(accountId);
-  return entry ? entry.status : 'disconnected';
+  return clients.get(accountId)?.status ?? 'disconnected';
 }
 
 async function restorePersistedSessions() {
