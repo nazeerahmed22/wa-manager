@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const path = require('path');
+const fs = require('fs');
 const { randomUUID } = require('crypto');
 
 const db = require('./database');
@@ -100,10 +101,36 @@ app.delete('/api/whatsapp/accounts/:accountId', requireAuth, requireOwner, async
     await wa.disconnectAccount(accountId);
     db.prepare('DELETE FROM messages WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM wa_accounts WHERE id = ?').run(accountId);
+    const sessionPath = path.join('/var/www/wa-manager/sessions', `session-${accountId}`);
+    try { fs.rmSync(sessionPath, { recursive: true, force: true }); } catch (_) {}
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/whatsapp/profile/:accountId', requireAuth, async (req, res) => {
+  const { accountId } = req.params;
+  const entry = wa.clients.get(accountId);
+  if (!entry || entry.status !== 'connected') return res.json({ profilePic: null, phone: null });
+  try {
+    const wid = entry.client.info?.wid?._serialized;
+    const phone = entry.client.info?.wid?.user || '';
+    const profilePic = wid ? await entry.client.getProfilePicUrl(wid).catch(() => null) : null;
+    res.json({ profilePic, phone });
+  } catch (_) {
+    res.json({ profilePic: null, phone: entry.client.info?.wid?.user || '' });
+  }
+});
+
+app.patch('/api/whatsapp/accounts/:accountId/label', requireAuth, requireOwner, (req, res) => {
+  const { accountId } = req.params;
+  const { label } = req.body;
+  if (!label) return res.status(400).json({ error: 'Label required' });
+  db.prepare('UPDATE wa_accounts SET label=? WHERE id=?').run(label, accountId);
+  const entry = wa.clients.get(accountId);
+  if (entry) entry.label = label;
+  res.json({ success: true });
 });
 
 // Chat routes

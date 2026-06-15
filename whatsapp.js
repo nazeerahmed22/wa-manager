@@ -159,7 +159,7 @@ async function getMessages(accountId, chatId, limit = 50) {
             m.fromMe ? 'me' : (contact.pushname || contact.number || m.from), m.body, m.timestamp);
       } catch (_) {}
     }
-    return messages.map((m) => ({ id: m.id._serialized, fromMe: m.fromMe, body: m.body, timestamp: m.timestamp, type: m.type }));
+    return messages.map((m) => ({ id: m.id._serialized, fromMe: m.fromMe, body: m.body, timestamp: m.timestamp, type: m.type, ack: m.ack }));
   } catch (err) {
     return db.prepare(
       'SELECT * FROM messages WHERE account_id=? AND chat_id=? ORDER BY timestamp DESC LIMIT ?'

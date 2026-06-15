@@ -5,42 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>WA Manager — Multi-Account Dashboard</title>
 <script src="/socket.io/socket.io.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@1/index.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #111b21;
-    --surface: #202c33;
-    --surface2: #2a3942;
-    --border: #313d45;
-    --text: #e9edef;
-    --text-muted: #8696a0;
-    --green: #00a884;
-    --green-dark: #005c4b;
-    --green-light: #d9fdd3;
-    --bubble-in: #202c33;
-    --bubble-out: #005c4b;
-    --accent: #00a884;
+    --bg: #000000;
+    --sidebar: #111B21;
+    --surface: #202C33;
+    --surface2: #2A3942;
+    --border: #222D34;
+    --text: #E9EDEF;
+    --text-muted: #8696A0;
+    --green: #00A884;
+    --green-dark: #025C4C;
+    --bubble-in: #1F2C34;
+    --bubble-out: #005C4B;
     --danger: #f15c6d;
     --radius: 8px;
+    --blue-tick: #53BDEB;
   }
 
   body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; overflow: hidden; }
 
   /* ── Auth Screen ── */
-  #auth-screen {
-    position: fixed; inset: 0; background: var(--bg);
-    display: flex; align-items: center; justify-content: center; z-index: 100;
-  }
+  #auth-screen { position: fixed; inset: 0; background: var(--sidebar); display: flex; align-items: center; justify-content: center; z-index: 100; }
   #auth-screen.hidden { display: none; }
 
-  .auth-card {
-    background: var(--surface); border-radius: 12px; padding: 40px;
-    width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,.4);
-  }
-  .auth-card .logo {
-    text-align: center; margin-bottom: 28px;
-  }
+  .auth-card { background: var(--surface); border-radius: 12px; padding: 40px; width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+  .auth-card .logo { text-align: center; margin-bottom: 28px; }
   .auth-card .logo svg { width: 56px; height: 56px; }
   .auth-card h1 { text-align: center; font-size: 22px; margin-bottom: 6px; }
   .auth-card p { text-align: center; color: var(--text-muted); font-size: 14px; margin-bottom: 28px; }
@@ -52,7 +45,7 @@
     color: var(--text); padding: 10px 14px; border-radius: var(--radius);
     font-size: 14px; outline: none; transition: border .2s;
   }
-  .form-group input:focus, .form-group select:focus { border-color: var(--green); }
+  .form-group input:focus { border-color: var(--green); }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center;
@@ -64,8 +57,9 @@
   .btn-primary { background: var(--green); color: #fff; width: 100%; padding: 12px; font-size: 15px; }
   .btn-primary:hover:not(:disabled) { background: #009070; }
   .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
-  .btn-ghost:hover { background: var(--surface2); }
+  .btn-ghost:hover { background: var(--surface2); color: var(--text); }
   .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover:not(:disabled) { background: #d94455; }
 
   .auth-switch { text-align: center; margin-top: 20px; font-size: 14px; color: var(--text-muted); }
   .auth-switch a { color: var(--green); cursor: pointer; text-decoration: none; }
@@ -78,23 +72,25 @@
 
   /* Accounts Sidebar */
   #accounts-sidebar {
-    width: 72px; background: var(--surface); border-right: 1px solid var(--border);
+    width: 72px; background: var(--sidebar); border-right: 1px solid var(--border);
     display: flex; flex-direction: column; align-items: center;
     padding: 12px 0; gap: 8px; overflow-y: auto; flex-shrink: 0;
   }
+
   .account-avatar {
-    width: 48px; height: 48px; border-radius: 50%; background: var(--surface2);
+    width: 48px; height: 48px; border-radius: 50%; background: var(--green-dark);
     display: flex; align-items: center; justify-content: center;
     cursor: pointer; position: relative; border: 2px solid transparent;
-    font-weight: 600; font-size: 16px; color: var(--text);
-    transition: border-color .2s;
+    font-weight: 600; font-size: 16px; color: #fff; overflow: hidden;
+    transition: border-color .2s; flex-shrink: 0;
   }
   .account-avatar:hover { border-color: var(--green); }
   .account-avatar.active { border-color: var(--green); }
+  .account-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
   .account-avatar .status-dot {
     position: absolute; bottom: 1px; right: 1px;
     width: 12px; height: 12px; border-radius: 50%;
-    border: 2px solid var(--surface); background: #8696a0;
+    border: 2px solid var(--sidebar); background: #8696a0;
   }
   .account-avatar .status-dot.connected { background: #25d366; }
   .account-avatar .status-dot.connecting { background: #f5a623; }
@@ -102,8 +98,7 @@
     position: absolute; top: -3px; right: -3px;
     background: var(--danger); color: #fff; font-size: 10px;
     min-width: 18px; height: 18px; border-radius: 9px;
-    display: flex; align-items: center; justify-content: center; padding: 0 4px;
-    font-weight: 700;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px; font-weight: 700;
   }
 
   .add-account-btn {
@@ -120,24 +115,25 @@
     width: 40px; height: 40px; border-radius: 50%;
     background: var(--green-dark); display: flex; align-items: center;
     justify-content: center; font-weight: 700; font-size: 14px; cursor: pointer;
-    color: #fff; margin-bottom: 4px;
+    color: #fff; margin-bottom: 4px; flex-shrink: 0;
+    transition: background .2s;
   }
+  .user-avatar-sm:hover { background: var(--green); }
 
   /* Chats Sidebar */
   #chats-sidebar {
-    width: 340px; background: var(--surface); border-right: 1px solid var(--border);
+    width: 340px; background: var(--sidebar); border-right: 1px solid var(--border);
     display: flex; flex-direction: column; flex-shrink: 0;
   }
 
   .chats-header {
     padding: 16px; display: flex; align-items: center;
     justify-content: space-between; border-bottom: 1px solid var(--border);
+    background: var(--surface);
   }
   .chats-header h2 { font-size: 18px; font-weight: 600; }
 
-  .search-box {
-    padding: 8px 12px; position: relative;
-  }
+  .search-box { padding: 8px 12px; position: relative; background: var(--sidebar); }
   .search-box input {
     width: 100%; background: var(--surface2); border: none;
     color: var(--text); padding: 8px 12px 8px 36px; border-radius: 8px;
@@ -152,7 +148,7 @@
 
   .chat-item {
     display: flex; align-items: center; gap: 12px;
-    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04);
+    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.03);
     transition: background .15s;
   }
   .chat-item:hover { background: var(--surface2); }
@@ -180,7 +176,7 @@
   /* Main Chat Area */
   #chat-area {
     flex: 1; display: flex; flex-direction: column; background: var(--bg);
-    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.02'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.015'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
     overflow: hidden;
   }
 
@@ -188,45 +184,86 @@
     flex: 1; display: flex; flex-direction: column; align-items: center;
     justify-content: center; color: var(--text-muted); gap: 12px;
   }
-  #chat-placeholder svg { opacity: .3; }
-  #chat-placeholder h3 { font-size: 20px; }
+  #chat-placeholder svg { opacity: .25; }
+  #chat-placeholder h3 { font-size: 22px; color: var(--text); }
   #chat-placeholder p { font-size: 14px; }
 
   .chat-header {
-    background: var(--surface); padding: 12px 20px;
+    background: var(--surface); padding: 10px 20px;
     display: flex; align-items: center; gap: 14px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
   .chat-header-avatar {
     width: 42px; height: 42px; border-radius: 50%;
     background: var(--green-dark); display: flex; align-items: center;
     justify-content: center; font-weight: 600; font-size: 15px; color: #fff;
+    overflow: hidden; flex-shrink: 0;
   }
+  .chat-header-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+  .chat-header-info { flex: 1; }
   .chat-header-info h3 { font-size: 16px; font-weight: 600; }
   .chat-header-info p { font-size: 13px; color: var(--text-muted); }
+  .chat-header-actions { display: flex; gap: 4px; }
+  .chat-header-actions button {
+    width: 40px; height: 40px; border-radius: 50%; background: none; border: none;
+    color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 18px; transition: background .15s;
+  }
+  .chat-header-actions button:hover { background: var(--surface2); color: var(--text); }
 
-  #messages-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
+  #messages-container { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 2px; }
 
   .msg-wrapper { display: flex; flex-direction: column; max-width: 65%; margin-bottom: 2px; }
   .msg-wrapper.out { align-self: flex-end; align-items: flex-end; }
   .msg-wrapper.in { align-self: flex-start; align-items: flex-start; }
 
   .bubble {
-    padding: 8px 12px; border-radius: 8px; font-size: 14px;
-    line-height: 1.45; word-break: break-word; position: relative;
-    max-width: 100%;
+    padding: 7px 12px 6px; border-radius: 8px; font-size: 14px;
+    line-height: 1.45; word-break: break-word; position: relative; max-width: 100%;
   }
   .bubble.out { background: var(--bubble-out); border-radius: 8px 0 8px 8px; }
   .bubble.in { background: var(--bubble-in); border-radius: 0 8px 8px 8px; }
-  .bubble .msg-time { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 4px; display: block; text-align: right; }
 
-  .msg-sender { font-size: 12px; color: var(--green); margin-bottom: 2px; padding-left: 2px; }
+  .bubble-footer { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 3px; }
+  .msg-time { font-size: 11px; color: rgba(255,255,255,.45); }
+  .msg-tick { font-size: 12px; line-height: 1; }
+  .msg-tick.sent { color: rgba(255,255,255,.55); }
+  .msg-tick.delivered { color: rgba(255,255,255,.55); }
+  .msg-tick.read { color: var(--blue-tick); }
 
+  .msg-sender { font-size: 12px; color: var(--green); margin-bottom: 3px; padding-left: 2px; }
+
+  /* Message types */
+  .msg-media { display: flex; flex-direction: column; gap: 4px; }
+  .msg-media img { max-width: 260px; max-height: 200px; border-radius: 6px; cursor: pointer; display: block; }
+  .msg-media img:hover { opacity: .9; }
+  .msg-file { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+  .msg-file .file-icon { font-size: 28px; }
+  .msg-file .file-info { flex: 1; }
+  .msg-file .file-name { font-size: 13px; font-weight: 500; }
+  .msg-file .file-size { font-size: 11px; color: var(--text-muted); }
+  .msg-audio { display: flex; align-items: center; gap: 10px; min-width: 200px; }
+  .msg-audio .play-btn { width: 36px; height: 36px; border-radius: 50%; background: var(--green); border: none; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .msg-audio .waveform { flex: 1; height: 28px; background: repeating-linear-gradient(90deg, rgba(255,255,255,.3) 0px, rgba(255,255,255,.3) 2px, transparent 2px, transparent 6px); border-radius: 2px; }
+  .msg-location a { color: var(--green); text-decoration: none; display: flex; align-items: center; gap: 6px; }
+  .msg-location a:hover { text-decoration: underline; }
+  .msg-vcard { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+  .msg-vcard .vcard-icon { width: 40px; height: 40px; border-radius: 50%; background: var(--green-dark); display: flex; align-items: center; justify-content: center; font-size: 20px; }
+  .msg-revoked { color: var(--text-muted); font-style: italic; font-size: 13px; }
+  .msg-sticker img { max-width: 140px; }
+
+  /* Message input area */
   .message-input-area {
-    background: var(--surface); padding: 12px 20px;
-    display: flex; align-items: flex-end; gap: 12px;
-    border-top: 1px solid var(--border);
+    background: var(--surface); padding: 10px 16px;
+    display: flex; align-items: flex-end; gap: 8px;
+    border-top: 1px solid var(--border); flex-shrink: 0; position: relative;
   }
+  .input-icon-btn {
+    width: 40px; height: 40px; border-radius: 50%; background: none; border: none;
+    color: var(--text-muted); cursor: pointer; display: flex; align-items: center;
+    justify-content: center; font-size: 20px; flex-shrink: 0; transition: color .15s;
+  }
+  .input-icon-btn:hover { color: var(--text); }
   #message-input {
     flex: 1; background: var(--surface2); border: none; color: var(--text);
     padding: 10px 16px; border-radius: 24px; font-size: 15px;
@@ -241,69 +278,98 @@
   }
   .send-btn:hover { background: #009070; }
 
-  /* Modal */
+  /* Emoji picker */
+  #emoji-picker-container {
+    position: absolute; bottom: 70px; left: 16px; z-index: 50;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); border-radius: 8px; overflow: hidden;
+  }
+  #emoji-picker-container.hidden { display: none; }
+  emoji-picker { --background: var(--surface2); --border-color: var(--border); --category-emoji-size: 1.1rem; }
+
+  /* Modals */
   .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    position: fixed; inset: 0; background: rgba(0,0,0,.75);
     display: flex; align-items: center; justify-content: center; z-index: 200;
   }
   .modal-overlay.hidden { display: none; }
   .modal {
-    background: var(--surface); border-radius: 12px; padding: 32px;
-    width: 420px; max-width: 95vw; box-shadow: 0 12px 40px rgba(0,0,0,.5);
-    position: relative;
+    background: var(--surface); border-radius: 12px; padding: 28px;
+    width: 440px; max-width: 95vw; max-height: 90vh; overflow-y: auto;
+    box-shadow: 0 16px 48px rgba(0,0,0,.6); position: relative;
   }
   .modal h2 { font-size: 20px; margin-bottom: 8px; }
-  .modal p { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+  .modal p.subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
   .modal-close {
     position: absolute; top: 16px; right: 16px;
     background: none; border: none; color: var(--text-muted);
     font-size: 22px; cursor: pointer; line-height: 1;
   }
   .modal-close:hover { color: var(--text); }
+  .modal-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .modal-section h3 { font-size: 14px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 14px; }
 
+  /* QR Modal */
   #qr-container {
-    text-align: center; padding: 20px;
-    background: #fff; border-radius: 8px; margin: 16px 0;
-    min-height: 260px; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 20px; background: #fff; border-radius: 8px;
+    margin: 16px 0; min-height: 260px; display: flex; align-items: center; justify-content: center;
   }
   #qr-container img { max-width: 220px; max-height: 220px; }
   #qr-status { text-align: center; font-size: 14px; color: var(--text-muted); margin-top: 12px; }
 
+  /* Account Profile Modal */
+  .profile-pic-large {
+    width: 96px; height: 96px; border-radius: 50%; background: var(--green-dark);
+    display: flex; align-items: center; justify-content: center; font-size: 36px;
+    font-weight: 700; color: #fff; overflow: hidden; margin: 0 auto 16px;
+  }
+  .profile-pic-large img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+  .profile-info-row { display: flex; gap: 8px; align-items: center; color: var(--text-muted); font-size: 14px; padding: 6px 0; }
+  .profile-info-row svg { flex-shrink: 0; }
+  .profile-info-row span { color: var(--text); }
+
+  /* App Profile Modal */
+  .account-status-row {
+    display: flex; align-items: center; gap: 12px; padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .account-status-row:last-child { border-bottom: none; }
+  .acc-mini-avatar {
+    width: 40px; height: 40px; border-radius: 50%; background: var(--green-dark);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 14px; color: #fff; flex-shrink: 0; overflow: hidden;
+  }
+  .acc-mini-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+  .acc-mini-info { flex: 1; }
+  .acc-mini-info .acc-name { font-size: 14px; font-weight: 500; }
+  .acc-mini-info .acc-status { font-size: 12px; color: var(--text-muted); }
+  .acc-mini-info .acc-status.connected { color: #25d366; }
+  .acc-mini-logout { background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .acc-mini-logout:hover { color: var(--danger); border-color: var(--danger); }
+
   /* Scrollbars */
-  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  /* Empty states */
   .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 14px; }
-
-  /* Loading spinner */
-  .spinner {
-    width: 32px; height: 32px; border: 3px solid var(--border);
-    border-top-color: var(--green); border-radius: 50%;
-    animation: spin .8s linear infinite;
-  }
+  .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Toast */
   #toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    background: #2a3942; color: var(--text); padding: 12px 20px;
+    background: var(--surface2); color: var(--text); padding: 12px 20px;
     border-radius: 8px; font-size: 14px; z-index: 1000;
-    box-shadow: 0 4px 16px rgba(0,0,0,.4);
-    opacity: 0; transition: opacity .3s; pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap;
   }
   #toast.show { opacity: 1; }
 
-  /* Tooltip */
   [data-tip] { position: relative; }
   [data-tip]::after {
-    content: attr(data-tip);
-    position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+    content: attr(data-tip); position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
     margin-left: 8px; background: #1a2a33; color: var(--text);
     padding: 4px 10px; border-radius: 6px; font-size: 12px;
-    white-space: nowrap; pointer-events: none;
-    opacity: 0; transition: opacity .15s;
+    white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 99;
   }
   [data-tip]:hover::after { opacity: 1; }
 
@@ -313,6 +379,10 @@
     #chat-area.mobile-show { display: flex; width: 100%; }
     #accounts-sidebar { display: none; }
   }
+
+  .danger-zone { background: rgba(241,92,109,.08); border: 1px solid rgba(241,92,109,.2); border-radius: 8px; padding: 16px; }
+  .danger-zone h3 { color: var(--danger) !important; }
+  .badge-count { display: inline-flex; align-items: center; justify-content: center; background: var(--green); color: #fff; font-size: 11px; min-width: 22px; height: 22px; border-radius: 11px; padding: 0 6px; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -371,7 +441,7 @@
     <div id="accounts-list"></div>
     <div id="add-account-btn" class="add-account-btn" data-tip="Add WhatsApp Account" onclick="openConnectModal()">+</div>
     <div class="sidebar-spacer"></div>
-    <div class="user-avatar-sm" id="user-avatar" data-tip="Logout" onclick="logout()"></div>
+    <div class="user-avatar-sm" id="user-avatar" data-tip="App Profile" onclick="openAppModal()"></div>
   </div>
 
   <!-- Chats Sidebar -->
@@ -382,7 +452,7 @@
     <div class="search-box">
       <input type="text" id="chat-search" placeholder="Search chats..." oninput="filterChats()" />
     </div>
-    <div id="chats-list"><div class="empty-state">Select a WhatsApp account</div></div>
+    <div id="chats-list"><div class="empty-state">Click an account avatar to load chats</div></div>
   </div>
 
   <!-- Chat Area -->
@@ -401,11 +471,19 @@
           <h3 id="chat-header-name"></h3>
           <p id="chat-header-sub">WhatsApp</p>
         </div>
+        <div class="chat-header-actions">
+          <button title="Video call">📹</button>
+          <button title="Voice call">📞</button>
+          <button title="Search">🔍</button>
+          <button title="More options">⋮</button>
+        </div>
       </div>
       <div id="messages-container"></div>
       <div class="message-input-area">
+        <button class="input-icon-btn" onclick="toggleEmojiPicker()" title="Emoji">😊</button>
+        <div id="emoji-picker-container" class="hidden"></div>
         <textarea id="message-input" placeholder="Type a message" rows="1" onkeydown="handleMsgKey(event)" oninput="autoResize(this)"></textarea>
-        <button class="send-btn" onclick="sendMessage()">
+        <button class="send-btn" onclick="sendMessage()" title="Send">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </div>
@@ -418,7 +496,7 @@
   <div class="modal">
     <button class="modal-close" onclick="closeConnectModal()">✕</button>
     <h2>Connect WhatsApp</h2>
-    <p>Give this account a label, then scan the QR code with WhatsApp on your phone.</p>
+    <p class="subtitle">Give this account a label, then scan the QR code with your phone.</p>
 
     <div id="connect-step-1">
       <div class="form-group">
@@ -429,10 +507,48 @@
     </div>
 
     <div id="connect-step-2" style="display:none">
-      <div id="qr-container">
-        <div class="spinner"></div>
-      </div>
+      <div id="qr-container"><div class="spinner"></div></div>
       <div id="qr-status">Waiting for QR code...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Account Profile Modal -->
+<div id="account-profile-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <button class="modal-close" onclick="closeAccountProfile()">✕</button>
+    <div id="account-profile-content">
+      <div style="display:flex;justify-content:center"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- App Profile Modal -->
+<div id="app-profile-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <button class="modal-close" onclick="closeAppModal()">✕</button>
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="width:64px;height:64px;border-radius:50%;background:var(--green-dark);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;margin:0 auto 12px" id="app-modal-avatar"></div>
+      <div style="font-size:18px;font-weight:600" id="app-modal-name"></div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:4px" id="app-modal-email"></div>
+    </div>
+
+    <div class="modal-section">
+      <h3>Connected Accounts <span class="badge-count" id="app-modal-count">0</span></h3>
+      <div id="app-modal-accounts"></div>
+    </div>
+
+    <div class="modal-section">
+      <h3>App Info</h3>
+      <div style="font-size:13px;color:var(--text-muted);line-height:2">
+        <div>Version: <span style="color:var(--text)">1.0.0</span></div>
+        <div>GitHub: <a href="https://github.com/nazeerahmed22/wa-manager" target="_blank" style="color:var(--green)">nazeerahmed22/wa-manager</a></div>
+      </div>
+    </div>
+
+    <div class="modal-section" style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-danger" onclick="logoutAll()" style="flex:1">Logout All WhatsApp</button>
+      <button class="btn btn-ghost" onclick="logout()" style="flex:1">Sign Out of App</button>
     </div>
   </div>
 </div>
@@ -452,14 +568,35 @@ let activeAccountId = null;
 let activeChat = null;
 let allChats = [];
 let pendingAccountId = null;
+const profilePicCache = {}; // accountId -> url
 
 // ── Init ───────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  if (token && currentUser) {
-    showApp();
-  } else {
-    document.getElementById('auth-screen').classList.remove('hidden');
-  }
+  if (token && currentUser) showApp();
+  else document.getElementById('auth-screen').classList.remove('hidden');
+
+  // Emoji picker setup
+  const pickerContainer = document.getElementById('emoji-picker-container');
+  const picker = document.createElement('emoji-picker');
+  pickerContainer.appendChild(picker);
+  picker.addEventListener('emoji-click', e => {
+    const input = document.getElementById('message-input');
+    const pos = input.selectionStart;
+    const val = input.value;
+    input.value = val.slice(0, pos) + e.detail.unicode + val.slice(pos);
+    input.selectionStart = input.selectionEnd = pos + e.detail.unicode.length;
+    input.focus();
+    autoResize(input);
+  });
+
+  // Close emoji picker on outside click
+  document.addEventListener('click', e => {
+    if (!pickerContainer.classList.contains('hidden') &&
+        !pickerContainer.contains(e.target) &&
+        !e.target.closest('.input-icon-btn')) {
+      pickerContainer.classList.add('hidden');
+    }
+  });
 });
 
 // ── Auth ───────────────────────────────────────────────
@@ -484,20 +621,14 @@ async function login() {
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   if (!email || !password) return setAuthError('Please fill in all fields');
-
   const btn = document.getElementById('login-btn');
   btn.disabled = true; btn.textContent = 'Signing in...';
   clearAuthError();
-
   try {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
-    token = data.token;
-    currentUser = data.user;
+    token = data.token; currentUser = data.user;
     localStorage.setItem('wa_token', token);
     localStorage.setItem('wa_user', JSON.stringify(currentUser));
     showApp();
@@ -514,20 +645,14 @@ async function signup() {
   const password = document.getElementById('signup-password').value;
   if (!name || !email || !password) return setAuthError('Please fill in all fields');
   if (password.length < 6) return setAuthError('Password must be at least 6 characters');
-
   const btn = document.getElementById('signup-btn');
   btn.disabled = true; btn.textContent = 'Creating account...';
   clearAuthError();
-
   try {
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
+    const res = await fetch('/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Signup failed');
-    token = data.token;
-    currentUser = data.user;
+    token = data.token; currentUser = data.user;
     localStorage.setItem('wa_token', token);
     localStorage.setItem('wa_user', JSON.stringify(currentUser));
     showApp();
@@ -545,6 +670,7 @@ function logout() {
   if (socket) { socket.disconnect(); socket = null; }
   document.getElementById('app').classList.add('hidden');
   document.getElementById('auth-screen').classList.remove('hidden');
+  closeAppModal();
   accounts = []; activeAccountId = null; activeChat = null;
 }
 
@@ -552,17 +678,9 @@ function logout() {
 function showApp() {
   document.getElementById('auth-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-
-  // Show user initials
-  const initials = (currentUser?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
+  const initials = (currentUser?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   document.getElementById('user-avatar').textContent = initials;
-  document.getElementById('user-avatar').setAttribute('data-tip', `Logout (${currentUser?.name})`);
-
-  // Hide add account for agents
-  if (currentUser?.role !== 'owner') {
-    document.getElementById('add-account-btn').style.display = 'none';
-  }
-
+  if (currentUser?.role !== 'owner') document.getElementById('add-account-btn').style.display = 'none';
   connectSocket();
   loadAccounts();
 }
@@ -570,31 +688,25 @@ function showApp() {
 // ── Socket.io ──────────────────────────────────────────
 function connectSocket() {
   socket = io({ auth: { token } });
-
-  socket.on('connect', () => console.log('Socket connected'));
   socket.on('connect_error', (err) => console.error('Socket error:', err.message));
 
   socket.on('qr', ({ accountId, qr }) => {
-    if (accountId === pendingAccountId) {
-      showQR(qr);
-    }
+    if (accountId === pendingAccountId) showQR(qr);
   });
 
   socket.on('account-ready', ({ accountId, phone, label }) => {
-    toast(`✓ ${label} connected! (${phone})`);
-    if (accountId === pendingAccountId) {
-      closeConnectModal();
-    }
+    toast(`✓ ${label} connected!${phone ? ' (' + phone + ')' : ''}`);
+    if (accountId === pendingAccountId) closeConnectModal();
     loadAccounts();
   });
 
   socket.on('account-status', ({ accountId, status }) => {
-    updateAccountStatus(accountId, status);
+    const account = accounts.find(a => a.id === accountId);
+    if (account) account.status = status;
+    renderAccounts();
   });
 
-  socket.on('new-message', (msg) => {
-    handleNewMessage(msg);
-  });
+  socket.on('new-message', (msg) => handleNewMessage(msg));
 }
 
 // ── Accounts ───────────────────────────────────────────
@@ -603,9 +715,12 @@ async function loadAccounts() {
     const res = await apiFetch('/api/whatsapp/accounts');
     accounts = await res.json();
     renderAccounts();
-  } catch (err) {
-    console.error('Load accounts error:', err);
-  }
+  } catch (_) {}
+}
+
+function avatarHTML(profilePic, initials, size = 48) {
+  if (profilePic) return `<img src="${escHtml(profilePic)}" alt="" onerror="this.style.display='none'">`;
+  return `<span style="font-size:${Math.round(size * 0.33)}px">${escHtml(initials)}</span>`;
 }
 
 function renderAccounts() {
@@ -614,48 +729,222 @@ function renderAccounts() {
   accounts.forEach(acc => {
     const el = document.createElement('div');
     el.className = 'account-avatar' + (acc.id === activeAccountId ? ' active' : '');
-    el.setAttribute('data-tip', acc.label + (acc.phone ? `\n${acc.phone}` : ''));
+    el.setAttribute('data-tip', acc.label + (acc.phone ? ' · ' + acc.phone : ''));
     el.dataset.id = acc.id;
 
-    const initials = acc.label.split(' ').map(w => w[0]).join('').toUpperCase().slice(0,2);
-    const statusClass = acc.status === 'connected' ? 'connected' : acc.status === 'connecting' || acc.status === 'authenticated' || acc.status === 'qr' ? 'connecting' : '';
+    const initials = (acc.label || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+    const statusClass = acc.status === 'connected' ? 'connected' : (acc.status === 'connecting' || acc.status === 'authenticated' || acc.status === 'qr') ? 'connecting' : '';
+    const pic = profilePicCache[acc.id] || null;
 
-    el.innerHTML = `
-      ${initials}
-      <span class="status-dot ${statusClass}"></span>
-    `;
-    el.onclick = () => selectAccount(acc.id, acc.label);
+    el.innerHTML = `${avatarHTML(pic, initials, 48)}<span class="status-dot ${statusClass}"></span>`;
+    el.onclick = () => openAccountProfile(acc.id);
     container.appendChild(el);
+
+    // Fetch profile pic in background if connected and not cached
+    if (acc.status === 'connected' && !profilePicCache[acc.id]) fetchAndCacheProfilePic(acc.id);
   });
 }
 
-function updateAccountStatus(accountId, status) {
-  const account = accounts.find(a => a.id === accountId);
-  if (account) account.status = status;
-  renderAccounts();
+async function fetchAndCacheProfilePic(accountId) {
+  try {
+    const res = await apiFetch(`/api/whatsapp/profile/${accountId}`);
+    const data = await res.json();
+    if (data.profilePic) {
+      profilePicCache[accountId] = data.profilePic;
+      renderAccounts();
+    }
+  } catch (_) {}
 }
 
-async function selectAccount(accountId, label) {
+async function selectAccountAndClose(accountId) {
+  closeAccountProfile();
+  const acc = accounts.find(a => a.id === accountId);
+  if (!acc) return;
   activeAccountId = accountId;
   activeChat = null;
-  document.getElementById('active-account-label').textContent = label;
+  document.getElementById('active-account-label').textContent = acc.label;
   document.getElementById('chat-placeholder').style.display = '';
   document.getElementById('active-chat').style.display = 'none';
   renderAccounts();
   loadChats(accountId);
 }
 
+// ── Account Profile Modal ──────────────────────────────
+async function openAccountProfile(accountId) {
+  const modal = document.getElementById('account-profile-modal');
+  modal.classList.remove('hidden');
+  const content = document.getElementById('account-profile-content');
+  content.innerHTML = '<div style="display:flex;justify-content:center;padding:40px"><div class="spinner"></div></div>';
+
+  const acc = accounts.find(a => a.id === accountId);
+  if (!acc) { modal.classList.add('hidden'); return; }
+
+  const initials = (acc.label || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+  let profilePic = profilePicCache[accountId] || null;
+  let phone = acc.phone || '';
+
+  if (acc.status === 'connected' && !profilePic) {
+    try {
+      const res = await apiFetch(`/api/whatsapp/profile/${accountId}`);
+      const data = await res.json();
+      if (data.profilePic) { profilePic = data.profilePic; profilePicCache[accountId] = profilePic; }
+      if (data.phone) phone = data.phone;
+    } catch (_) {}
+  }
+
+  const statusLabel = { connected: '🟢 Connected', connecting: '🟡 Connecting', authenticated: '🟡 Authenticating', qr: '🟡 Waiting for QR scan', disconnected: '🔴 Disconnected' };
+
+  content.innerHTML = `
+    <h2 style="text-align:center;margin-bottom:20px">Account Profile</h2>
+    <div class="profile-pic-large">${avatarHTML(profilePic, initials, 96)}</div>
+
+    <div class="profile-info-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/></svg>
+      <span>${escHtml(acc.label)}</span>
+    </div>
+    ${phone ? `<div class="profile-info-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>
+      <span>+${escHtml(phone)}</span>
+    </div>` : ''}
+    <div class="profile-info-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/></svg>
+      <span>${statusLabel[acc.status] || acc.status}</span>
+    </div>
+
+    <div class="modal-section">
+      <h3>Edit Label</h3>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="edit-label-input" value="${escHtml(acc.label)}" class="form-group" style="flex:1;margin:0;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;outline:none" />
+        <button class="btn btn-primary" style="width:auto;padding:9px 16px" onclick="saveAccountLabel('${escHtml(accountId)}')">Save</button>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <button class="btn btn-primary" style="width:100%;margin-bottom:10px" onclick="selectAccountAndClose('${escHtml(accountId)}')">
+        💬 View Chats
+      </button>
+      ${acc.status === 'connected' ? `<button class="btn btn-ghost" style="width:100%;margin-bottom:10px" onclick="disconnectAccount('${escHtml(accountId)}')">⏻ Disconnect</button>` : ''}
+    </div>
+
+    <div class="modal-section">
+      <div class="danger-zone">
+        <h3>Danger Zone</h3>
+        <p style="font-size:13px;color:var(--text-muted);margin:8px 0 14px">This will permanently remove this WhatsApp account and all its data.</p>
+        <button class="btn btn-danger" style="width:100%" onclick="removeAccount('${escHtml(accountId)}')">🗑 Remove Account</button>
+      </div>
+    </div>`;
+}
+
+function closeAccountProfile() {
+  document.getElementById('account-profile-modal').classList.add('hidden');
+}
+
+async function saveAccountLabel(accountId) {
+  const label = document.getElementById('edit-label-input')?.value?.trim();
+  if (!label) return toast('Label cannot be empty');
+  try {
+    const res = await apiFetch(`/api/whatsapp/accounts/${accountId}/label`, { method: 'PATCH', body: JSON.stringify({ label }) });
+    if (!res.ok) throw new Error((await res.json()).error);
+    const acc = accounts.find(a => a.id === accountId);
+    if (acc) acc.label = label;
+    toast('Label saved');
+    renderAccounts();
+    closeAccountProfile();
+  } catch (err) {
+    toast('Failed: ' + err.message);
+  }
+}
+
+async function disconnectAccount(accountId) {
+  try {
+    await apiFetch(`/api/whatsapp/disconnect/${accountId}`, { method: 'POST' });
+    toast('Account disconnected');
+    closeAccountProfile();
+    loadAccounts();
+  } catch (err) {
+    toast('Failed: ' + err.message);
+  }
+}
+
+async function removeAccount(accountId) {
+  if (!confirm('Remove this WhatsApp account? This cannot be undone.')) return;
+  try {
+    const res = await apiFetch(`/api/whatsapp/accounts/${accountId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json()).error);
+    delete profilePicCache[accountId];
+    accounts = accounts.filter(a => a.id !== accountId);
+    if (activeAccountId === accountId) {
+      activeAccountId = null; activeChat = null;
+      document.getElementById('active-account-label').textContent = 'Select Account';
+      document.getElementById('chats-list').innerHTML = '<div class="empty-state">Click an account avatar to load chats</div>';
+      document.getElementById('chat-placeholder').style.display = '';
+      document.getElementById('active-chat').style.display = 'none';
+    }
+    renderAccounts();
+    closeAccountProfile();
+    toast('Account removed');
+  } catch (err) {
+    toast('Failed: ' + err.message);
+  }
+}
+
+// ── App Profile Modal ──────────────────────────────────
+function openAppModal() {
+  const modal = document.getElementById('app-profile-modal');
+  modal.classList.remove('hidden');
+  const initials = (currentUser?.name || 'U').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+  document.getElementById('app-modal-avatar').textContent = initials;
+  document.getElementById('app-modal-name').textContent = currentUser?.name || '';
+  document.getElementById('app-modal-email').textContent = currentUser?.email || '';
+
+  const connected = accounts.filter(a => a.status === 'connected');
+  document.getElementById('app-modal-count').textContent = connected.length;
+
+  const accContainer = document.getElementById('app-modal-accounts');
+  if (!accounts.length) {
+    accContainer.innerHTML = '<div style="color:var(--text-muted);font-size:14px;padding:8px 0">No accounts added yet</div>';
+    return;
+  }
+  accContainer.innerHTML = accounts.map(acc => {
+    const initials = (acc.label || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+    const pic = profilePicCache[acc.id];
+    const statusClass = acc.status === 'connected' ? 'connected' : '';
+    return `<div class="account-status-row">
+      <div class="acc-mini-avatar">${avatarHTML(pic, initials, 40)}</div>
+      <div class="acc-mini-info">
+        <div class="acc-name">${escHtml(acc.label)}</div>
+        <div class="acc-status ${statusClass}">${acc.status === 'connected' ? (acc.phone ? '+' + acc.phone : 'Connected') : acc.status}</div>
+      </div>
+      ${acc.status === 'connected' ? `<button class="acc-mini-logout" onclick="disconnectAccount('${escHtml(acc.id)}')">Disconnect</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function closeAppModal() {
+  document.getElementById('app-profile-modal').classList.add('hidden');
+}
+
+async function logoutAll() {
+  const connected = accounts.filter(a => a.status === 'connected');
+  if (!connected.length) return toast('No accounts connected');
+  for (const acc of connected) {
+    try { await apiFetch(`/api/whatsapp/disconnect/${acc.id}`, { method: 'POST' }); } catch (_) {}
+  }
+  toast('All accounts disconnected');
+  closeAppModal();
+  loadAccounts();
+}
+
 // ── Chats ──────────────────────────────────────────────
 async function loadChats(accountId) {
   const container = document.getElementById('chats-list');
   container.innerHTML = '<div class="empty-state"><div class="spinner" style="margin:auto"></div></div>';
-
   try {
     const res = await apiFetch(`/api/chats/${accountId}`);
     if (!res.ok) throw new Error('Failed');
     allChats = await res.json();
     renderChats(allChats);
-  } catch (err) {
+  } catch (_) {
     container.innerHTML = '<div class="empty-state">Could not load chats.<br>Account may not be connected.</div>';
   }
 }
@@ -663,23 +952,21 @@ async function loadChats(accountId) {
 function renderChats(chats) {
   const container = document.getElementById('chats-list');
   if (!chats.length) { container.innerHTML = '<div class="empty-state">No chats found</div>'; return; }
-
   container.innerHTML = chats.map(chat => {
-    const initials = (chat.name || '?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2) || '?';
-    const preview = chat.lastMessage?.body?.replace(/\n/g,' ') || '';
+    const initials = (chat.name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?';
+    const preview = chat.lastMessage?.body?.replace(/\n/g, ' ') || '';
     const time = chat.lastMessage?.timestamp ? formatTime(chat.lastMessage.timestamp) : '';
     const badge = chat.unreadCount > 0 ? `<span class="unread-badge">${chat.unreadCount}</span>` : '';
-
     return `
-      <div class="chat-item ${chat.id === activeChat?.id ? 'active' : ''}" onclick="openChat('${escHtml(chat.id)}', '${escHtml(chat.name || chat.id)}')">
-        <div class="chat-avatar">${initials}</div>
+      <div class="chat-item ${chat.id === activeChat?.id ? 'active' : ''}" onclick="openChat('${escAttr(chat.id)}', '${escAttr(chat.name || chat.id)}')">
+        <div class="chat-avatar">${escHtml(initials)}</div>
         <div class="chat-info">
           <div class="chat-info-top">
             <span class="chat-name">${escHtml(chat.name || chat.id)}</span>
             <span class="chat-time">${time}</span>
           </div>
           <div class="chat-info-bottom">
-            <span class="chat-preview">${escHtml(preview.slice(0,60))}</span>
+            <span class="chat-preview">${escHtml(preview.slice(0, 60))}</span>
             ${badge}
           </div>
         </div>
@@ -698,15 +985,11 @@ async function openChat(chatId, chatName) {
   document.getElementById('chat-placeholder').style.display = 'none';
   document.getElementById('active-chat').style.display = 'flex';
 
-  const initials = chatName.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2) || '?';
+  const initials = chatName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?';
   document.getElementById('chat-header-avatar').textContent = initials;
   document.getElementById('chat-header-name').textContent = chatName;
+  document.getElementById('chat-header-sub').textContent = 'WhatsApp';
 
-  // Mark active in sidebar
-  document.querySelectorAll('.chat-item').forEach(el => el.classList.remove('active'));
-  event?.currentTarget?.classList?.add('active');
-
-  // Update unread count in allChats
   const chat = allChats.find(c => c.id === chatId);
   if (chat) { chat.unreadCount = 0; renderChats(allChats); }
 
@@ -717,20 +1000,61 @@ async function openChat(chatId, chatName) {
     const res = await apiFetch(`/api/messages/${activeAccountId}/${encodeURIComponent(chatId)}`);
     const messages = await res.json();
     renderMessages(messages);
-  } catch (err) {
+  } catch (_) {
     container.innerHTML = '<div class="empty-state">Could not load messages</div>';
   }
+}
+
+function renderMessageContent(msg) {
+  const type = msg.type || 'chat';
+  const body = escHtml(msg.body || '');
+
+  switch (type) {
+    case 'chat':
+      return body || '<em style="color:var(--text-muted)">(empty)</em>';
+    case 'image':
+      return `<div class="msg-media">
+        ${msg.body ? `<img src="${escHtml(msg.body)}" onclick="window.open(this.src,'_blank')" onerror="this.replaceWith(document.createTextNode('📷 Photo'))">` : '<span style="color:var(--text-muted)">📷 Photo</span>'}
+      </div>`;
+    case 'video':
+      return `<div class="msg-media"><span style="font-size:28px">🎥</span><div><div style="font-size:13px;font-weight:500">Video</div><div style="font-size:11px;color:var(--text-muted)">Tap to play</div></div></div>`;
+    case 'document':
+      return `<div class="msg-file">
+        <div class="file-icon">📄</div>
+        <div class="file-info"><div class="file-name">${body || 'Document'}</div><div class="file-size">Document</div></div>
+      </div>`;
+    case 'audio':
+    case 'ptt':
+      return `<div class="msg-audio">
+        <button class="play-btn" title="Play">▶</button>
+        <div class="waveform"></div>
+        <span style="font-size:12px;color:var(--text-muted)">0:00</span>
+      </div>`;
+    case 'sticker':
+      return `<div class="msg-sticker">${msg.body ? `<img src="${escHtml(msg.body)}" onerror="this.replaceWith(document.createTextNode('🎭'))">` : '🎭'}</div>`;
+    case 'location':
+      return `<div class="msg-location">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(msg.body||'')}" target="_blank">View Location</a></div>`;
+    case 'vcard':
+      return `<div class="msg-vcard"><div class="vcard-icon">👤</div><div><div style="font-size:13px;font-weight:500">Contact Card</div><div style="font-size:12px;color:var(--text-muted)">${body.slice(0,40) || 'Contact'}</div></div></div>`;
+    case 'revoked':
+      return `<span class="msg-revoked">🚫 This message was deleted</span>`;
+    default:
+      return `<span style="color:var(--text-muted)">📎 ${escHtml(type)} message</span>`;
+  }
+}
+
+function renderTicks(ack) {
+  if (ack === undefined || ack === null) return '';
+  if (ack === 0) return '<span class="msg-tick sent" title="Pending">🕐</span>';
+  if (ack === 1) return '<span class="msg-tick sent" title="Sent">✓</span>';
+  if (ack === 2) return '<span class="msg-tick delivered" title="Delivered">✓✓</span>';
+  return '<span class="msg-tick read" title="Read">✓✓</span>';
 }
 
 function renderMessages(messages) {
   const container = document.getElementById('messages-container');
   container.innerHTML = '';
-
-  if (!messages.length) {
-    container.innerHTML = '<div class="empty-state">No messages yet</div>';
-    return;
-  }
-
+  if (!messages.length) { container.innerHTML = '<div class="empty-state">No messages yet</div>'; return; }
   messages.forEach(msg => appendMessage(msg, false));
   container.scrollTop = container.scrollHeight;
 }
@@ -738,17 +1062,20 @@ function renderMessages(messages) {
 function appendMessage(msg, scroll = true) {
   const container = document.getElementById('messages-container');
   const fromMe = msg.fromMe || msg.from_me === 1;
-  const body = msg.body || '';
   const ts = msg.timestamp ? formatTime(msg.timestamp) : '';
 
   const wrapper = document.createElement('div');
   wrapper.className = `msg-wrapper ${fromMe ? 'out' : 'in'}`;
+  wrapper.dataset.msgId = msg.id || '';
 
   wrapper.innerHTML = `
     ${!fromMe && msg.author && msg.author !== 'me' ? `<span class="msg-sender">${escHtml(msg.author)}</span>` : ''}
     <div class="bubble ${fromMe ? 'out' : 'in'}">
-      ${escHtml(body)}
-      <span class="msg-time">${ts}</span>
+      ${renderMessageContent(msg)}
+      <div class="bubble-footer">
+        <span class="msg-time">${ts}</span>
+        ${fromMe ? renderTicks(msg.ack) : ''}
+      </div>
     </div>`;
 
   container.appendChild(wrapper);
@@ -756,48 +1083,34 @@ function appendMessage(msg, scroll = true) {
 }
 
 function handleNewMessage(msg) {
-  // Update chat list
   const chat = allChats.find(c => c.id === msg.chatId);
   if (msg.accountId === activeAccountId) {
     if (chat) {
       chat.lastMessage = { body: msg.body, timestamp: msg.timestamp };
       if (msg.chatId !== activeChat?.id && !msg.fromMe) chat.unreadCount = (chat.unreadCount || 0) + 1;
     } else {
-      allChats.unshift({
-        id: msg.chatId, name: msg.chatName || msg.chatId,
-        lastMessage: { body: msg.body, timestamp: msg.timestamp },
-        unreadCount: msg.fromMe ? 0 : 1,
-      });
+      allChats.unshift({ id: msg.chatId, name: msg.chatName || msg.chatId, lastMessage: { body: msg.body, timestamp: msg.timestamp }, unreadCount: msg.fromMe ? 0 : 1 });
     }
     renderChats(allChats);
   }
-
-  // Append if active chat
-  if (msg.accountId === activeAccountId && msg.chatId === activeChat?.id) {
-    appendMessage(msg, true);
-  }
-
-  // Update account badge
+  if (msg.accountId === activeAccountId && msg.chatId === activeChat?.id) appendMessage(msg, true);
   updateAccountBadges();
 }
 
 function updateAccountBadges() {
   const totalUnread = allChats.reduce((s, c) => s + (c.unreadCount || 0), 0);
   const avatar = document.querySelector(`.account-avatar[data-id="${activeAccountId}"]`);
-  if (avatar) {
-    const existing = avatar.querySelector('.badge');
-    if (totalUnread > 0) {
-      if (existing) existing.textContent = totalUnread;
-      else {
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = totalUnread;
-        avatar.appendChild(badge);
-      }
-    } else if (existing) {
-      existing.remove();
+  if (!avatar) return;
+  const existing = avatar.querySelector('.badge');
+  if (totalUnread > 0) {
+    if (existing) existing.textContent = totalUnread;
+    else {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = totalUnread;
+      avatar.appendChild(badge);
     }
-  }
+  } else if (existing) existing.remove();
 }
 
 async function sendMessage() {
@@ -805,19 +1118,11 @@ async function sendMessage() {
   const input = document.getElementById('message-input');
   const message = input.value.trim();
   if (!message) return;
-
   input.value = '';
   autoResize(input);
-
   try {
-    const res = await apiFetch('/api/messages/send', {
-      method: 'POST',
-      body: JSON.stringify({ accountId: activeAccountId, chatId: activeChat.id, message }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      toast('Send failed: ' + err.error);
-    }
+    const res = await apiFetch('/api/messages/send', { method: 'POST', body: JSON.stringify({ accountId: activeAccountId, chatId: activeChat.id, message }) });
+    if (!res.ok) { const err = await res.json(); toast('Send failed: ' + err.error); }
   } catch (err) {
     toast('Send failed: ' + err.message);
   }
@@ -830,6 +1135,11 @@ function handleMsgKey(e) {
 function autoResize(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ── Emoji Picker ───────────────────────────────────────
+function toggleEmojiPicker() {
+  document.getElementById('emoji-picker-container').classList.toggle('hidden');
 }
 
 // ── Connect Modal ──────────────────────────────────────
@@ -854,26 +1164,17 @@ let qrPollTimer = null;
 async function startConnect() {
   const label = document.getElementById('account-label').value.trim();
   if (!label) return toast('Please enter a label');
-
   document.getElementById('connect-step-1').style.display = 'none';
   document.getElementById('connect-step-2').style.display = '';
   document.getElementById('qr-container').innerHTML = '<div class="spinner"></div>';
   document.getElementById('qr-status').textContent = 'Starting WhatsApp client...';
-
   try {
-    const res = await apiFetch('/api/whatsapp/connect', {
-      method: 'POST',
-      body: JSON.stringify({ label }),
-    });
+    const res = await apiFetch('/api/whatsapp/connect', { method: 'POST', body: JSON.stringify({ label }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     pendingAccountId = data.accountId;
     document.getElementById('qr-status').textContent = 'Waiting for QR code...';
-
-    // Ask socket to replay cached QR in case we missed it
     if (socket?.connected) socket.emit('watch-qr', { accountId: pendingAccountId });
-
-    // Also start REST polling as fallback (works even if WebSocket fails)
     startQRPolling(pendingAccountId);
   } catch (err) {
     toast('Error: ' + err.message);
@@ -890,15 +1191,9 @@ function startQRPolling(accountId) {
     try {
       const res = await apiFetch(`/api/whatsapp/qr/${accountId}`);
       const data = await res.json();
-      if (data.status === 'connected') {
-        stopQRPolling();
-        closeConnectModal();
-        loadAccounts();
-      } else if (data.qr) {
-        showQR(data.qr);
-      }
+      if (data.status === 'connected') { stopQRPolling(); closeConnectModal(); loadAccounts(); }
+      else if (data.qr) showQR(data.qr);
     } catch (_) {}
-    // Stop polling after 3 minutes
     if (attempts > 36) stopQRPolling();
   }, 5000);
 }
@@ -908,7 +1203,6 @@ function stopQRPolling() {
 }
 
 function showQR(qrDataUrl) {
-  // Don't re-render same QR
   const existing = document.querySelector('#qr-container img');
   if (existing?.src === qrDataUrl) return;
   document.getElementById('qr-container').innerHTML = `<img src="${qrDataUrl}" alt="QR Code" />`;
@@ -917,22 +1211,14 @@ function showQR(qrDataUrl) {
 
 // ── Utilities ──────────────────────────────────────────
 async function apiFetch(url, opts = {}) {
-  return fetch(url, {
-    ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...(opts.headers || {}),
-    },
-  });
+  return fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) } });
 }
 
 function formatTime(timestamp) {
   const d = new Date(timestamp * 1000);
   const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const yesterday = new Date(now); yesterday.setDate(now.getDate()-1);
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
   if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
@@ -940,6 +1226,11 @@ function formatTime(timestamp) {
 function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(str) {
+  if (!str) return '';
+  return String(str).replace(/'/g,'&#39;').replace(/"/g,'&quot;');
 }
 
 let toastTimer;
@@ -951,9 +1242,13 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
 
-// Handle Enter key in auth forms
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
+  if (e.key === 'Escape') {
+    closeAccountProfile();
+    closeAppModal();
+    closeConnectModal();
+  }
+  if (e.key === 'Enter' && document.getElementById('auth-screen') && !document.getElementById('auth-screen').classList.contains('hidden')) {
     if (document.getElementById('login-form').style.display !== 'none') login();
     else if (document.getElementById('signup-form').style.display !== 'none') signup();
   }
