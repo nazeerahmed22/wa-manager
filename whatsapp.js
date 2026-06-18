@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, NoAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const db = require('./database');
 
@@ -24,14 +24,11 @@ async function createClient(accountId, label) {
   ).run(accountId, label, label);
 
   const client = new Client({
-    authStrategy: new LocalAuth({
-      clientId: accountId,
-      dataPath: '/var/www/wa-manager/sessions',
-    }),
+    authStrategy: new NoAuth(),
     puppeteer: {
       executablePath: '/usr/bin/chromium-browser',
-      userDataDir: '/tmp/wa-' + accountId + '-' + Date.now(),
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+      userDataDir: '/tmp/wa-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process'],
     },
   });
 
